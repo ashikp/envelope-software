@@ -57,8 +57,12 @@ from PySide6.QtWidgets import (
 )
 
 from envelope_app.layout import (
+    DEFAULT_ENVELOPE_SIZE_ID,
+    ENVELOPE_SIZE_ORDER,
+    ENVELOPE_SIZES,
     LAYOUT_KIND_A4,
     LAYOUT_KIND_ENVELOPE,
+    LAYOUT_KIND_US_LETTER,
     ORIENTATION_LANDSCAPE,
     ORIENTATION_PORTRAIT,
     PAGE_H_PT,
@@ -69,7 +73,9 @@ from envelope_app.layout import (
     get_page_dimensions,
     layout_orientation,
     layout_to_json,
+    page_size_points_from_layout_json,
     parse_layout,
+    read_envelope_size_id,
     remap_box_elements,
 )
 from envelope_app.paths import app_data_dir, template_images_dir
@@ -958,14 +964,17 @@ class DesignerWidget(QWidget):
         parent: QWidget | None = None,
         *,
         layout_kind: str = LAYOUT_KIND_ENVELOPE,
+        envelope_size_id: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._suppress_nav = False
         self._layout_kind = layout_kind
         self._orientation = ORIENTATION_PORTRAIT
+        self._envelope_size_id = envelope_size_id or DEFAULT_ENVELOPE_SIZE_ID
+        self._suppress_envelope_ui = False
         self._scene = EnvelopeScene()
         self._scene._on_change = self.layout_changed.emit
-        pw, ph = get_page_dimensions(self._layout_kind, self._orientation)
+        pw, ph = self._page_dims()
         self._scene.set_page_size(pw, ph)
 
         self._view = DesignerGraphicsView(self._scene)
@@ -1055,6 +1064,22 @@ class DesignerWidget(QWidget):
         self._orientation_combo.currentIndexChanged.connect(self._on_orientation_changed)
         self._orientation_combo.view().setUniformItemSizes(True)
         row2.addWidget(self._orientation_combo)
+
+        self._lbl_envelope_size = QLabel("Envelope size")
+        self._lbl_envelope_size.setObjectName("fieldLabel")
+        self._lbl_envelope_size.setVisible(layout_kind == LAYOUT_KIND_ENVELOPE)
+        self._envelope_combo = QComboBox()
+        self._envelope_combo.setObjectName("designerEnvelopeSizeCombo")
+        self._envelope_combo.setMinimumWidth(200)
+        for eid in ENVELOPE_SIZE_ORDER:
+            self._envelope_combo.addItem(ENVELOPE_SIZES[eid][0], eid)
+        ei = self._envelope_combo.findData(self._envelope_size_id)
+        if ei >= 0:
+            self._envelope_combo.setCurrentIndex(ei)
+        self._envelope_combo.currentIndexChanged.connect(self._on_envelope_size_changed)
+        self._envelope_combo.setVisible(layout_kind == LAYOUT_KIND_ENVELOPE)
+        row2.addWidget(self._lbl_envelope_size)
+        row2.addWidget(self._envelope_combo)
 
         self._fields_bar = QFrame()
         self._fields_bar.setObjectName("mergeFieldsBar")
@@ -1198,6 +1223,53 @@ class DesignerWidget(QWidget):
         self._ruler_h.update()
         self._ruler_v.update()
 
+    def _page_dims(self) -> tuple[float, float]:
+        if self._layout_kind == LAYOUT_KIND_ENVELOPE:
+            return get_page_dimensions(
+                self._layout_kind,
+                self._orientation,
+                envelope_size_id=self._envelope_size_id,
+            )
+        return get_page_dimensions(self._layout_kind, self._orientation)
+
+    def _on_envelope_size_changed(self, _index: int) -> None:
+        if self._layout_kind != LAYOUT_KIND_ENVELOPE:
+            return
+        if self._suppress_envelope_ui:
+            return
+        new_id = self._envelope_combo.currentData()
+        if new_id is None:
+            return
+        new_id = str(new_id)
+        if new_id == self._envelope_size_id:
+            return
+        old_w, old_h = get_page_dimensions(
+            LAYOUT_KIND_ENVELOPE,
+            self._orientation,
+            envelope_size_id=self._envelope_size_id,
+        )
+        self._envelope_size_id = new_id
+        new_w, new_h = get_page_dimensions(
+            LAYOUT_KIND_ENVELOPE,
+            self._orientation,
+            envelope_size_id=self._envelope_size_id,
+        )
+        sx = new_w / old_w if old_w > 1e-9 else 1.0
+        sy = new_h / old_h if old_h > 1e-9 else 1.0
+        for it in list(self._scene.items()):
+            if not isinstance(it, (TemplateTextItem, TemplateImageItem)) or not it.data(UID_ROLE):
+                continue
+            it.setPos(QPointF(it.pos().x() * sx, it.pos().y() * sy))
+            if isinstance(it, TemplateTextItem):
+                tw = it.textWidth()
+                if tw > 0:
+                    it.setTextWidth(max(48.0, tw * sx))
+            else:
+                it.set_box_size(max(24.0, it._w * sx), max(24.0, it._h * sy))
+        self._scene.set_page_size(new_w, new_h)
+        self._scene.sync_selection_chrome()
+        self.layout_changed.emit()
+
     def _toggle_ruler_unit(self) -> None:
         self._ruler_inches = not self._ruler_inches
         self._ruler_unit_btn.setText("in" if self._ruler_inches else "pt")
@@ -1322,7 +1394,7 @@ class DesignerWidget(QWidget):
         elems = self._scene.elements_from_scene()
         remap_box_elements(elems)
         self._orientation = str(new_o)
-        pw, ph = get_page_dimensions(self._layout_kind, self._orientation)
+        pw, ph = self._page_dims()
         self._scene.set_page_size(pw, ph)
         for item in list(self._scene.items()):
             if isinstance(item, (TemplateTextItem, TemplateImageItem)) and item.data(UID_ROLE):
@@ -1367,7 +1439,7 @@ class DesignerWidget(QWidget):
         )
 
     def _configure_view_for_page_kind(self) -> None:
-        if self._layout_kind == LAYOUT_KIND_A4:
+        if self._layout_kind in (LAYOUT_KIND_A4, LAYOUT_KIND_US_LETTER):
             self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self._view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         else:
@@ -1376,7 +1448,7 @@ class DesignerWidget(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        if self._layout_kind != LAYOUT_KIND_A4:
+        if self._layout_kind not in (LAYOUT_KIND_A4, LAYOUT_KIND_US_LETTER):
             self.fit_view()
         self._update_rulers()
 
@@ -1487,9 +1559,9 @@ class DesignerWidget(QWidget):
             else:
                 self._editor.setReadOnly(True)
                 self._editor.clear()
+                _surf = "page" if self._layout_kind in (LAYOUT_KIND_A4, LAYOUT_KIND_US_LETTER) else "envelope"
                 self._hint.setText(
-                    f"Click a block on the {'page' if self._layout_kind == LAYOUT_KIND_A4 else 'envelope'}, "
-                    "then edit merge fields below."
+                    f"Click a block on the {_surf}, then edit merge fields below."
                 )
         finally:
             self._font_combo.blockSignals(False)
@@ -1540,7 +1612,7 @@ class DesignerWidget(QWidget):
 
     def _add_block(self) -> None:
         fam = self._font_combo.currentFont().family()
-        pw, ph = get_page_dimensions(self._layout_kind, self._orientation)
+        pw, ph = self._page_dims()
         el = TextElement(
             uid=str(uuid.uuid4()),
             x=48.0,
@@ -1579,7 +1651,7 @@ class DesignerWidget(QWidget):
             return
         ow = max(pm.width(), 1)
         oh = pm.height()
-        pw, ph = get_page_dimensions(self._layout_kind, self._orientation)
+        pw, ph = self._page_dims()
         tw = min(200.0, max(48.0, pw - 96.0))
         th = tw * (oh / ow)
         el = ImageElement(
@@ -1608,8 +1680,21 @@ class DesignerWidget(QWidget):
             self._orientation = o
         finally:
             self._orientation_combo.blockSignals(False)
-        pw, ph = get_page_dimensions(self._layout_kind, self._orientation)
-        self._scene.set_page_size(pw, ph)
+        self._suppress_envelope_ui = True
+        try:
+            if self._layout_kind == LAYOUT_KIND_ENVELOPE:
+                self._envelope_combo.blockSignals(True)
+                try:
+                    self._envelope_size_id = read_envelope_size_id(layout_json)
+                    ei = self._envelope_combo.findData(self._envelope_size_id)
+                    if ei >= 0:
+                        self._envelope_combo.setCurrentIndex(ei)
+                finally:
+                    self._envelope_combo.blockSignals(False)
+            pw, ph = page_size_points_from_layout_json(layout_json)
+            self._scene.set_page_size(pw, ph)
+        finally:
+            self._suppress_envelope_ui = False
         for item in list(self._scene.items()):
             if isinstance(item, (TemplateTextItem, TemplateImageItem)) and item.data(UID_ROLE):
                 self._scene.removeItem(item)
@@ -1624,10 +1709,12 @@ class DesignerWidget(QWidget):
         self.layout_changed.emit()
 
     def layout_json(self) -> str:
+        eid = self._envelope_size_id if self._layout_kind == LAYOUT_KIND_ENVELOPE else None
         return layout_to_json(
             self._scene.elements_from_scene(),
             self._orientation,
             layout_kind=self._layout_kind,
+            envelope_size_id=eid,
         )
 
     def preview_merge(self, row: dict[str, Any]) -> None:
@@ -1668,7 +1755,7 @@ class DesignerWidget(QWidget):
     def fit_view(self) -> None:
         r = self._scene.sceneRect()
         self._view.resetTransform()
-        if self._layout_kind == LAYOUT_KIND_A4:
+        if self._layout_kind in (LAYOUT_KIND_A4, LAYOUT_KIND_US_LETTER):
             self._view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             vp = self._view.viewport().rect()
             margin = 24.0

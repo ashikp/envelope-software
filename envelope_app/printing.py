@@ -3,18 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QMarginsF, QRectF, Qt
+from PySide6.QtCore import QPointF, QMarginsF, QRectF, QSizeF, Qt
 from PySide6.QtGui import QColor, QFont, QPageLayout, QPainter, QPageSize, QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsTextItem
 
 from envelope_app.layout import (
     LAYOUT_KIND_A4,
+    LAYOUT_KIND_US_LETTER,
     ORIENTATION_LANDSCAPE,
     ImageElement,
     TextElement,
-    get_page_dimensions,
     layout_orientation,
+    page_size_points_from_layout_json,
     parse_layout,
     read_layout_kind,
 )
@@ -27,9 +28,7 @@ def _resolve_image_path(rel: str) -> Path:
 
 
 def build_merged_scene(layout_json: str, record: dict[str, Any]) -> QGraphicsScene:
-    orient = layout_orientation(layout_json)
-    lk = read_layout_kind(layout_json)
-    pw, ph = get_page_dimensions(lk, orient)
+    pw, ph = page_size_points_from_layout_json(layout_json)
     scene = QGraphicsScene(0, 0, pw, ph)
     # White paper; explicit text color so print/PDF never inherits app palette (e.g. light on white).
     scene.setBackgroundBrush(QColor(255, 255, 255))
@@ -67,9 +66,7 @@ def paint_record(
     record: dict[str, Any],
     target_rect: QRectF,
 ) -> None:
-    orient = layout_orientation(layout_json)
-    lk = read_layout_kind(layout_json)
-    pw, ph = get_page_dimensions(lk, orient)
+    pw, ph = page_size_points_from_layout_json(layout_json)
     scene = build_merged_scene(layout_json, record)
     scene.render(
         painter,
@@ -80,13 +77,16 @@ def paint_record(
 
 
 def apply_printer_page(printer: QPrinter, layout_json: str) -> None:
-    """Match printer page size (#10 vs A4) and orientation to the saved layout."""
+    """Match printer page size to saved layout (exact pt size for envelopes)."""
     orient = layout_orientation(layout_json)
     lk = read_layout_kind(layout_json)
     if lk == LAYOUT_KIND_A4:
         page_size = QPageSize(QPageSize.PageSizeId.A4)
+    elif lk == LAYOUT_KIND_US_LETTER:
+        page_size = QPageSize(QPageSize.PageSizeId.Letter)
     else:
-        page_size = QPageSize(QPageSize.PageSizeId.Envelope10)
+        pw, ph = page_size_points_from_layout_json(layout_json)
+        page_size = QPageSize(QSizeF(pw, ph), QPageSize.Unit.Point)
     page_layout = QPageLayout(
         page_size,
         QPageLayout.Orientation.Landscape

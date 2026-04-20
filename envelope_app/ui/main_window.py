@@ -33,12 +33,19 @@ from PySide6.QtWidgets import (
 from envelope_app.db import Database
 from envelope_app.version import VERSION
 from envelope_app.record_import import load_records_file
-from envelope_app.layout import LAYOUT_KIND_A4, default_a4_layout, default_layout
+from envelope_app.layout import (
+    LAYOUT_KIND_A4,
+    LAYOUT_KIND_US_LETTER,
+    default_a4_layout,
+    default_layout,
+    default_us_letter_layout,
+)
 from envelope_app.printing import export_pdf, print_records
 from envelope_app.ui.designer_widget import DesignerWidget
 
 TEMPLATE_ENVELOPE = "default"
 TEMPLATE_A4 = "a4"
+TEMPLATE_US_LETTER = "us_letter"
 
 APP_CREDIT = "Developed by Md Ashikur Rahman"
 
@@ -103,22 +110,27 @@ class MainWindow(QMainWindow):
         self._preview_row_spin.setMinimumHeight(28)
         self._preview_row_spin.valueChanged.connect(self._apply_preview)
 
-        self._preview_check = QCheckBox("Preview live merge (both layouts)")
+        self._preview_check = QCheckBox("Preview live merge (all layouts)")
         self._preview_check.setChecked(False)
         self._preview_check.toggled.connect(self._apply_preview)
 
         self._loading_template = False
         self._designer_env = DesignerWidget()
         self._designer_a4 = DesignerWidget(layout_kind=LAYOUT_KIND_A4)
+        self._designer_letter = DesignerWidget(layout_kind=LAYOUT_KIND_US_LETTER)
         self._designer_env.layout_changed.connect(self._mark_dirty_envelope)
         self._designer_a4.layout_changed.connect(self._mark_dirty_a4)
+        self._designer_letter.layout_changed.connect(self._mark_dirty_letter)
         self._designer_env.shortcode_copied.connect(self._on_shortcode_copied)
         self._designer_a4.shortcode_copied.connect(self._on_shortcode_copied)
+        self._designer_letter.shortcode_copied.connect(self._on_shortcode_copied)
 
         self._dirty_envelope = False
         self._dirty_a4 = False
+        self._dirty_letter = False
         self._preview_backup_env: list[tuple[str, str]] = []
         self._preview_backup_a4: list[tuple[str, str]] = []
+        self._preview_backup_letter: list[tuple[str, str]] = []
 
         # —— Data page
         data_page = QWidget()
@@ -187,7 +199,8 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(
             _page_header(
                 "Layout designer",
-                "Envelope and A4 are saved separately — use Save envelope / Save A4. Same CSV fields for both.",
+                "Envelope, A4, and US Letter are saved separately — use Save envelope / Save A4 / Save US Letter. "
+                "Same CSV fields for all.",
             ),
             stretch=1,
         )
@@ -197,6 +210,9 @@ class MainWindow(QMainWindow):
         self._btn_save_a4 = QPushButton("Save A4")
         self._btn_save_a4.setObjectName("primary")
         self._btn_save_a4.clicked.connect(self._save_a4_template)
+        self._btn_save_letter = QPushButton("Save US Letter")
+        self._btn_save_letter.setObjectName("primary")
+        self._btn_save_letter.clicked.connect(self._save_us_letter_template)
         self._btn_fit = QPushButton("Fit view")
         self._btn_fit.clicked.connect(self._fit_active_designer)
         self._btn_sample_pdf = QPushButton("Sample PDF…")
@@ -207,6 +223,7 @@ class MainWindow(QMainWindow):
         self._btn_sample_pdf.clicked.connect(self._export_sample_pdf_from_designer)
         top_bar.addWidget(self._btn_save_env, alignment=Qt.AlignmentFlag.AlignTop)
         top_bar.addWidget(self._btn_save_a4, alignment=Qt.AlignmentFlag.AlignTop)
+        top_bar.addWidget(self._btn_save_letter, alignment=Qt.AlignmentFlag.AlignTop)
         top_bar.addWidget(self._btn_fit, alignment=Qt.AlignmentFlag.AlignTop)
         top_bar.addWidget(self._btn_sample_pdf, alignment=Qt.AlignmentFlag.AlignTop)
         z_root.addLayout(top_bar)
@@ -219,8 +236,12 @@ class MainWindow(QMainWindow):
         self._btn_del_a4 = QPushButton("Delete A4 template…")
         self._btn_del_a4.setObjectName("danger")
         self._btn_del_a4.clicked.connect(self._delete_a4_template)
+        self._btn_del_letter = QPushButton("Delete US Letter template…")
+        self._btn_del_letter.setObjectName("danger")
+        self._btn_del_letter.clicked.connect(self._delete_us_letter_template)
         del_row.addWidget(self._btn_del_env)
         del_row.addWidget(self._btn_del_a4)
+        del_row.addWidget(self._btn_del_letter)
         z_root.addLayout(del_row)
 
         mode_row = QHBoxLayout()
@@ -231,6 +252,7 @@ class MainWindow(QMainWindow):
         self._designer_mode.setObjectName("designerModeCombo")
         self._designer_mode.addItem("US #10 envelope", "envelope")
         self._designer_mode.addItem("A4 letter", "a4")
+        self._designer_mode.addItem("US Letter (8.5 × 11 in)", "us_letter")
         self._designer_mode.currentIndexChanged.connect(self._on_designer_mode_changed)
         mode_row.addWidget(ml)
         mode_row.addWidget(self._designer_mode)
@@ -240,6 +262,7 @@ class MainWindow(QMainWindow):
         self._designer_stack = QStackedWidget()
         self._designer_stack.addWidget(self._designer_env)
         self._designer_stack.addWidget(self._designer_a4)
+        self._designer_stack.addWidget(self._designer_letter)
 
         preview_bar = QHBoxLayout()
         preview_bar.setSpacing(16)
@@ -253,6 +276,7 @@ class MainWindow(QMainWindow):
         z_root.addWidget(self._designer_stack, stretch=1)
         self._designer_env.setMinimumHeight(520)
         self._designer_a4.setMinimumHeight(520)
+        self._designer_letter.setMinimumHeight(520)
 
         # —— Print page
         print_page = QWidget()
@@ -264,7 +288,7 @@ class MainWindow(QMainWindow):
         p_root.addWidget(
             _page_header(
                 "Print & export",
-                "Print or export PDF — one page per list row. Pick envelope or A4 to match your layout.",
+                "Print or export PDF — one page per list row. Pick envelope, US Letter, or A4 to match your layout.",
             )
         )
 
@@ -290,6 +314,7 @@ class MainWindow(QMainWindow):
         self._print_layout_combo = QComboBox()
         self._print_layout_combo.setObjectName("printLayoutCombo")
         self._print_layout_combo.addItem("US #10 envelope", "envelope")
+        self._print_layout_combo.addItem("US Letter (8.5 × 11 in)", "us_letter")
         self._print_layout_combo.addItem("A4 letter", "a4")
         lay_row.addWidget(lay_lab)
         lay_row.addWidget(self._print_layout_combo, stretch=1)
@@ -316,8 +341,8 @@ class MainWindow(QMainWindow):
 
         hint = QLabel(
             "Export PDF writes every row. Sample PDF (1 page) saves a single merged proof. "
-            "Page size follows the layout (#10 or A4). For physical envelopes, load #10 stock and avoid "
-            "“fit to page” scaling if alignment looks off."
+            "Page size follows the layout (envelope size, US Letter, or A4). For physical envelopes, load matching stock "
+            "and avoid “fit to page” scaling if alignment looks off."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -353,7 +378,7 @@ class MainWindow(QMainWindow):
         self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for label, tip in (
             ("Data", "Import CSV lists"),
-            ("Designer", "#10 envelope or A4 layout"),
+            ("Designer", "Envelope sizes, A4, or US Letter"),
             ("Print", "Bulk to printer"),
         ):
             it = QListWidgetItem(label)
@@ -434,23 +459,40 @@ class MainWindow(QMainWindow):
             return
         self._dirty_a4 = True
 
+    def _mark_dirty_letter(self) -> None:
+        if self._loading_template:
+            return
+        self._dirty_letter = True
+
+    def _layout_json_for_kind(self, kind: str) -> str:
+        if kind == "a4":
+            return self._designer_a4.layout_json()
+        if kind == "us_letter":
+            return self._designer_letter.layout_json()
+        return self._designer_env.layout_json()
+
     def _on_shortcode_copied(self, text: str) -> None:
         self.statusBar().showMessage(
             f"Copied {text} — paste into the merge template below", 4000
         )
 
     def _fit_active_designer(self) -> None:
-        if self._designer_stack.currentIndex() == 0:
+        idx = self._designer_stack.currentIndex()
+        if idx == 0:
             self._designer_env.fit_view()
-        else:
+        elif idx == 1:
             self._designer_a4.fit_view()
+        else:
+            self._designer_letter.fit_view()
 
     def _on_designer_mode_changed(self, index: int) -> None:
         self._designer_stack.setCurrentIndex(index)
         if index == 0:
             self._designer_env.fit_view()
-        else:
+        elif index == 1:
             self._designer_a4.fit_view()
+        else:
+            self._designer_letter.fit_view()
 
     def _load_template_from_db(self) -> None:
         self._loading_template = True
@@ -465,12 +507,19 @@ class MainWindow(QMainWindow):
                 self._designer_a4.load_layout_json(t4.layout_json)
             else:
                 self._designer_a4.load_layout_json(default_a4_layout())
+            tl = self._db.get_template(TEMPLATE_US_LETTER)
+            if tl:
+                self._designer_letter.load_layout_json(tl.layout_json)
+            else:
+                self._designer_letter.load_layout_json(default_us_letter_layout())
             self._dirty_envelope = False
             self._dirty_a4 = False
+            self._dirty_letter = False
         finally:
             self._loading_template = False
         self._designer_env.fit_view()
         self._designer_a4.fit_view()
+        self._designer_letter.fit_view()
 
     def _save_envelope_template(self) -> None:
         self._db.upsert_template(TEMPLATE_ENVELOPE, self._designer_env.layout_json())
@@ -481,6 +530,11 @@ class MainWindow(QMainWindow):
         self._db.upsert_template(TEMPLATE_A4, self._designer_a4.layout_json())
         self._dirty_a4 = False
         self.statusBar().showMessage("A4 template saved.", 4000)
+
+    def _save_us_letter_template(self) -> None:
+        self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
+        self._dirty_letter = False
+        self.statusBar().showMessage("US Letter template saved.", 4000)
 
     def _delete_envelope_template(self) -> None:
         if (
@@ -534,6 +588,32 @@ class MainWindow(QMainWindow):
             self._apply_preview()
         self.statusBar().showMessage("A4 template deleted; reset to default.", 5000)
 
+    def _delete_us_letter_template(self) -> None:
+        if (
+            QMessageBox.question(
+                self,
+                "Delete US Letter template",
+                "Remove the saved US Letter layout from the database and reset the canvas to the default "
+                "starting layout?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._db.delete_template(TEMPLATE_US_LETTER)
+        self._preview_backup_letter = []
+        self._loading_template = True
+        try:
+            self._designer_letter.load_layout_json(default_us_letter_layout())
+        finally:
+            self._loading_template = False
+        self._dirty_letter = False
+        self._designer_letter.fit_view()
+        if self._preview_check.isChecked():
+            self._apply_preview()
+        self.statusBar().showMessage("US Letter template deleted; reset to default.", 5000)
+
     def _reload_batches(self) -> None:
         self._batch_combo.blockSignals(True)
         self._print_batch.blockSignals(True)
@@ -560,6 +640,7 @@ class MainWindow(QMainWindow):
             self._preview_row_spin.setMaximum(1)
             self._designer_env.set_column_keys([])
             self._designer_a4.set_column_keys([])
+            self._designer_letter.set_column_keys([])
             self._apply_preview()
             return
         rows = self._db.get_records(int(bid))
@@ -570,11 +651,13 @@ class MainWindow(QMainWindow):
             self._preview_row_spin.setMaximum(1)
             self._designer_env.set_column_keys([])
             self._designer_a4.set_column_keys([])
+            self._designer_letter.set_column_keys([])
             self._apply_preview()
             return
         keys: list[str] = list(rows[0].payload.keys())
         self._designer_env.set_column_keys(keys)
         self._designer_a4.set_column_keys(keys)
+        self._designer_letter.set_column_keys(keys)
         self._table.setRowCount(len(rows))
         self._table.setColumnCount(len(keys))
         self._table.setHorizontalHeaderLabels(keys)
@@ -643,8 +726,11 @@ class MainWindow(QMainWindow):
                 self._preview_backup_env = self._designer_env.snapshot_texts()
             if not self._preview_backup_a4:
                 self._preview_backup_a4 = self._designer_a4.snapshot_texts()
+            if not self._preview_backup_letter:
+                self._preview_backup_letter = self._designer_letter.snapshot_texts()
             self._designer_env.preview_merge(row)
             self._designer_a4.preview_merge(row)
+            self._designer_letter.preview_merge(row)
         else:
             if self._preview_backup_env:
                 self._designer_env.restore_templates_after_preview(self._preview_backup_env)
@@ -652,6 +738,9 @@ class MainWindow(QMainWindow):
             if self._preview_backup_a4:
                 self._designer_a4.restore_templates_after_preview(self._preview_backup_a4)
                 self._preview_backup_a4 = []
+            if self._preview_backup_letter:
+                self._designer_letter.restore_templates_after_preview(self._preview_backup_letter)
+                self._preview_backup_letter = []
 
     def _import_records_from_path(self, path: Path) -> None:
         try:
@@ -739,13 +828,16 @@ class MainWindow(QMainWindow):
 
     def _ensure_layout_saved_for_kind(self, kind: str) -> bool:
         if kind == "a4":
-            if not self._dirty_a4:
-                return True
+            dirty = self._dirty_a4
             msg = "Save your A4 layout before continuing?"
+        elif kind == "us_letter":
+            dirty = self._dirty_letter
+            msg = "Save your US Letter layout before continuing?"
         else:
-            if not self._dirty_envelope:
-                return True
+            dirty = self._dirty_envelope
             msg = "Save your envelope layout before continuing?"
+        if not dirty:
+            return True
         m = QMessageBox.question(
             self,
             "Unsaved layout",
@@ -758,6 +850,9 @@ class MainWindow(QMainWindow):
             if kind == "a4":
                 self._db.upsert_template(TEMPLATE_A4, self._designer_a4.layout_json())
                 self._dirty_a4 = False
+            elif kind == "us_letter":
+                self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
+                self._dirty_letter = False
             else:
                 self._db.upsert_template(TEMPLATE_ENVELOPE, self._designer_env.layout_json())
                 self._dirty_envelope = False
@@ -778,10 +873,13 @@ class MainWindow(QMainWindow):
         kind = str(self._print_layout_combo.currentData() or "envelope")
         if not self._ensure_layout_saved_for_kind(kind):
             return
-        layout_json = (
-            self._designer_a4.layout_json() if kind == "a4" else self._designer_env.layout_json()
-        )
-        default_name = "letters-a4.pdf" if kind == "a4" else "envelopes.pdf"
+        layout_json = self._layout_json_for_kind(kind)
+        if kind == "a4":
+            default_name = "letters-a4.pdf"
+        elif kind == "us_letter":
+            default_name = "letters-us-letter.pdf"
+        else:
+            default_name = "envelopes.pdf"
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export PDF",
@@ -800,13 +898,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved PDF: {path}", 6000)
 
     def _export_one_page_pdf(self, *, kind: str, row: dict[str, Any]) -> None:
-        """Write a single-page PDF using the current saved layout for envelope or A4."""
+        """Write a single-page PDF using the current saved layout for envelope, A4, or US Letter."""
         if not self._ensure_layout_saved_for_kind(kind):
             return
-        layout_json = (
-            self._designer_a4.layout_json() if kind == "a4" else self._designer_env.layout_json()
-        )
-        default_name = "a4-sample.pdf" if kind == "a4" else "envelope-sample.pdf"
+        layout_json = self._layout_json_for_kind(kind)
+        if kind == "a4":
+            default_name = "a4-sample.pdf"
+        elif kind == "us_letter":
+            default_name = "us-letter-sample.pdf"
+        else:
+            default_name = "envelope-sample.pdf"
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export sample PDF (one page)",
@@ -859,9 +960,7 @@ class MainWindow(QMainWindow):
         kind = str(self._print_layout_combo.currentData() or "envelope")
         if not self._ensure_layout_saved_for_kind(kind):
             return
-        layout_json = (
-            self._designer_a4.layout_json() if kind == "a4" else self._designer_env.layout_json()
-        )
+        layout_json = self._layout_json_for_kind(kind)
         ok = print_records(self, layout_json, records, show_dialog=show_dialog)
         if ok:
             self.statusBar().showMessage("Print job sent.", 4000)
@@ -871,7 +970,7 @@ class MainWindow(QMainWindow):
             self,
             "About Envelope Studio",
             f"Version {VERSION}\n\n"
-            "Design US #10 envelope or A4 letter layouts with CSV mail merge — all data stays on this computer.\n\n"
+            "Design envelope, US Letter, or A4 layouts with CSV mail merge — all data stays on this computer.\n\n"
             f"{APP_CREDIT}.\n\n"
             "Merge fields use curly braces matching your column headers, e.g. {name}, {tracking_number}.",
         )
@@ -881,7 +980,7 @@ class MainWindow(QMainWindow):
         if app is not None and self._app_drop_filter_installed:
             app.removeEventFilter(self)
             self._app_drop_filter_installed = False
-        if self._dirty_envelope or self._dirty_a4:
+        if self._dirty_envelope or self._dirty_a4 or self._dirty_letter:
             r = QMessageBox.question(
                 self,
                 "Quit",
@@ -895,6 +994,8 @@ class MainWindow(QMainWindow):
                     self._db.upsert_template(TEMPLATE_ENVELOPE, self._designer_env.layout_json())
                 if self._dirty_a4:
                     self._db.upsert_template(TEMPLATE_A4, self._designer_a4.layout_json())
+                if self._dirty_letter:
+                    self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
             elif r == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return
