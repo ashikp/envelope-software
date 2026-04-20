@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QStatusBar,
@@ -76,7 +78,7 @@ class MainWindow(QMainWindow):
         self._db = db
         self.setWindowTitle("Envelope Studio")
         self.resize(1440, 900)
-        self.setMinimumSize(1024, 700)
+        self.setMinimumSize(880, 560)
         self._app_drop_filter_installed = False
 
         self._batch_combo = QComboBox()
@@ -136,8 +138,8 @@ class MainWindow(QMainWindow):
         data_page = QWidget()
         data_page.setObjectName("page")
         d_root = QVBoxLayout(data_page)
-        d_root.setContentsMargins(32, 28, 32, 24)
-        d_root.setSpacing(20)
+        d_root.setContentsMargins(14, 10, 14, 10)
+        d_root.setSpacing(12)
 
         d_root.addWidget(
             _page_header(
@@ -146,34 +148,6 @@ class MainWindow(QMainWindow):
                 "like {name} or {tracking_number}. JSON is also supported if needed.",
             )
         )
-
-        controls = QFrame()
-        controls.setObjectName("card")
-        c_l = QVBoxLayout(controls)
-        c_l.setContentsMargins(20, 18, 20, 18)
-        c_l.setSpacing(14)
-
-        row1_title = QLabel("Active import")
-        row1_title.setObjectName("cardTitle")
-        c_l.addWidget(row1_title)
-
-        row1 = QHBoxLayout()
-        lab = QLabel("List")
-        lab.setObjectName("fieldLabel")
-        lab.setFixedWidth(72)
-        row1.addWidget(lab)
-        row1.addWidget(self._batch_combo, stretch=1)
-        btn_import = QPushButton("Import CSV…")
-        btn_import.setObjectName("primary")
-        btn_import.clicked.connect(self._import_records)
-        row1.addWidget(btn_import)
-        btn_del = QPushButton("Remove list")
-        btn_del.setObjectName("danger")
-        btn_del.clicked.connect(self._delete_batch)
-        row1.addWidget(btn_del)
-        c_l.addLayout(row1)
-
-        d_root.addWidget(controls)
 
         table_card = QFrame()
         table_card.setObjectName("card")
@@ -188,167 +162,185 @@ class MainWindow(QMainWindow):
         t_l.addWidget(self._table)
         d_root.addWidget(table_card, stretch=1)
 
-        # —— Designer page
+        # —— Designer page: stacked canvases only (saves in left app sidebar; block tools on the right in DesignerWidget)
         designer_page = QWidget()
         designer_page.setObjectName("page")
         z_root = QVBoxLayout(designer_page)
-        z_root.setContentsMargins(24, 18, 24, 14)
-        z_root.setSpacing(10)
+        z_root.setContentsMargins(4, 2, 4, 2)
+        z_root.setSpacing(0)
 
-        top_bar = QHBoxLayout()
-        top_bar.addWidget(
-            _page_header(
-                "Layout designer",
-                "Envelope, A4, and US Letter are saved separately — use Save envelope / Save A4 / Save US Letter. "
-                "Same CSV fields for all.",
-            ),
-            stretch=1,
-        )
         self._btn_save_env = QPushButton("Save envelope")
         self._btn_save_env.setObjectName("primary")
+        self._btn_save_env.setMinimumHeight(36)
         self._btn_save_env.clicked.connect(self._save_envelope_template)
         self._btn_save_a4 = QPushButton("Save A4")
         self._btn_save_a4.setObjectName("primary")
+        self._btn_save_a4.setMinimumHeight(36)
         self._btn_save_a4.clicked.connect(self._save_a4_template)
         self._btn_save_letter = QPushButton("Save US Letter")
         self._btn_save_letter.setObjectName("primary")
+        self._btn_save_letter.setMinimumHeight(36)
         self._btn_save_letter.clicked.connect(self._save_us_letter_template)
         self._btn_fit = QPushButton("Fit view")
+        self._btn_fit.setMinimumHeight(34)
         self._btn_fit.clicked.connect(self._fit_active_designer)
         self._btn_sample_pdf = QPushButton("Sample PDF…")
+        self._btn_sample_pdf.setMinimumHeight(34)
         self._btn_sample_pdf.setToolTip(
             "Export a single-page PDF for sharing. If a list is loaded, uses the preview row; "
             "otherwise merge fields are left empty."
         )
         self._btn_sample_pdf.clicked.connect(self._export_sample_pdf_from_designer)
-        top_bar.addWidget(self._btn_save_env, alignment=Qt.AlignmentFlag.AlignTop)
-        top_bar.addWidget(self._btn_save_a4, alignment=Qt.AlignmentFlag.AlignTop)
-        top_bar.addWidget(self._btn_save_letter, alignment=Qt.AlignmentFlag.AlignTop)
-        top_bar.addWidget(self._btn_fit, alignment=Qt.AlignmentFlag.AlignTop)
-        top_bar.addWidget(self._btn_sample_pdf, alignment=Qt.AlignmentFlag.AlignTop)
-        z_root.addLayout(top_bar)
 
-        del_row = QHBoxLayout()
-        del_row.addStretch(1)
-        self._btn_del_env = QPushButton("Delete envelope template…")
+        self._btn_del_env = QPushButton("Delete envelope…")
         self._btn_del_env.setObjectName("danger")
+        self._btn_del_env.setMinimumHeight(32)
         self._btn_del_env.clicked.connect(self._delete_envelope_template)
-        self._btn_del_a4 = QPushButton("Delete A4 template…")
+        self._btn_del_a4 = QPushButton("Delete A4…")
         self._btn_del_a4.setObjectName("danger")
+        self._btn_del_a4.setMinimumHeight(32)
         self._btn_del_a4.clicked.connect(self._delete_a4_template)
-        self._btn_del_letter = QPushButton("Delete US Letter template…")
+        self._btn_del_letter = QPushButton("Delete US Letter…")
         self._btn_del_letter.setObjectName("danger")
+        self._btn_del_letter.setMinimumHeight(32)
         self._btn_del_letter.clicked.connect(self._delete_us_letter_template)
-        del_row.addWidget(self._btn_del_env)
-        del_row.addWidget(self._btn_del_a4)
-        del_row.addWidget(self._btn_del_letter)
-        z_root.addLayout(del_row)
 
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(12)
-        ml = QLabel("Design for")
-        ml.setObjectName("fieldLabel")
         self._designer_mode = QComboBox()
         self._designer_mode.setObjectName("designerModeCombo")
         self._designer_mode.addItem("US #10 envelope", "envelope")
         self._designer_mode.addItem("A4 letter", "a4")
         self._designer_mode.addItem("US Letter (8.5 × 11 in)", "us_letter")
         self._designer_mode.currentIndexChanged.connect(self._on_designer_mode_changed)
-        mode_row.addWidget(ml)
-        mode_row.addWidget(self._designer_mode)
-        mode_row.addStretch(1)
-        z_root.addLayout(mode_row)
 
         self._designer_stack = QStackedWidget()
         self._designer_stack.addWidget(self._designer_env)
         self._designer_stack.addWidget(self._designer_a4)
         self._designer_stack.addWidget(self._designer_letter)
+        self._designer_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+        z_root.addWidget(self._designer_stack, stretch=1)
 
-        preview_bar = QHBoxLayout()
-        preview_bar.setSpacing(16)
-        preview_bar.addWidget(self._preview_check)
+        # —— Left sidebar: stacked tool panels (Data / Designer / Print)
+        data_sidebar_page = QWidget()
+        dsl = QVBoxLayout(data_sidebar_page)
+        dsl.setContentsMargins(4, 0, 4, 0)
+        dsl.setSpacing(10)
+        ds_title = QLabel("Import & lists")
+        ds_title.setObjectName("cardTitle")
+        dsl.addWidget(ds_title)
+        lab_list = QLabel("Active list")
+        lab_list.setObjectName("fieldLabel")
+        dsl.addWidget(lab_list)
+        dsl.addWidget(self._batch_combo)
+        self._btn_import_data = QPushButton("Import CSV…")
+        self._btn_import_data.setObjectName("primary")
+        self._btn_import_data.setMinimumHeight(38)
+        self._btn_import_data.clicked.connect(self._import_records)
+        dsl.addWidget(self._btn_import_data)
+        self._btn_remove_batch = QPushButton("Remove list")
+        self._btn_remove_batch.setObjectName("danger")
+        self._btn_remove_batch.setMinimumHeight(34)
+        self._btn_remove_batch.clicked.connect(self._delete_batch)
+        dsl.addWidget(self._btn_remove_batch)
+        dsl.addStretch(1)
+
+        designer_sidebar_page = QWidget()
+        dsz = QVBoxLayout(designer_sidebar_page)
+        dsz.setContentsMargins(4, 0, 4, 0)
+        dsz.setSpacing(8)
+        side_title = QLabel("Layouts")
+        side_title.setObjectName("cardTitle")
+        dsz.addWidget(side_title)
+        side_hint = QLabel(
+            "Save each layout type separately. Same CSV merge fields for all. Envelope size is on the right panel."
+        )
+        side_hint.setObjectName("hint")
+        side_hint.setWordWrap(True)
+        dsz.addWidget(side_hint)
+        ml = QLabel("Design for")
+        ml.setObjectName("fieldLabel")
+        dsz.addWidget(ml)
+        dsz.addWidget(self._designer_mode)
+        dsz.addSpacing(4)
+        dsz.addWidget(self._btn_save_env)
+        dsz.addWidget(self._btn_save_a4)
+        dsz.addWidget(self._btn_save_letter)
+        row_fit_sample = QHBoxLayout()
+        row_fit_sample.setSpacing(6)
+        row_fit_sample.addWidget(self._btn_fit, stretch=1)
+        row_fit_sample.addWidget(self._btn_sample_pdf, stretch=1)
+        dsz.addLayout(row_fit_sample)
+        dsz.addSpacing(2)
+        dsz.addWidget(self._btn_del_env)
+        dsz.addWidget(self._btn_del_a4)
+        dsz.addWidget(self._btn_del_letter)
+        dsz.addSpacing(4)
+        dsz.addWidget(self._preview_check)
         pr = QLabel("Preview row")
         pr.setObjectName("fieldLabel")
-        preview_bar.addWidget(pr)
-        preview_bar.addWidget(self._preview_row_spin)
-        preview_bar.addStretch(1)
-        z_root.addLayout(preview_bar)
-        z_root.addWidget(self._designer_stack, stretch=1)
-        self._designer_env.setMinimumHeight(520)
-        self._designer_a4.setMinimumHeight(520)
-        self._designer_letter.setMinimumHeight(520)
+        dsz.addWidget(pr)
+        dsz.addWidget(self._preview_row_spin)
+        dsz.addStretch(1)
 
-        # —— Print page
-        print_page = QWidget()
-        print_page.setObjectName("page")
-        p_root = QVBoxLayout(print_page)
-        p_root.setContentsMargins(32, 28, 32, 24)
-        p_root.setSpacing(20)
-
-        p_root.addWidget(
-            _page_header(
-                "Print & export",
-                "Print or export PDF — one page per list row. Pick envelope, US Letter, or A4 to match your layout.",
-            )
-        )
-
-        print_card = QFrame()
-        print_card.setObjectName("card")
-        pl = QVBoxLayout(print_card)
-        pl.setContentsMargins(24, 22, 24, 22)
-        pl.setSpacing(16)
-
+        print_sidebar_page = QWidget()
+        ppl = QVBoxLayout(print_sidebar_page)
+        ppl.setContentsMargins(4, 0, 4, 0)
+        ppl.setSpacing(10)
+        pst = QLabel("Print & export")
+        pst.setObjectName("cardTitle")
+        ppl.addWidget(pst)
         self._print_batch = QComboBox()
-        prow = QHBoxLayout()
-        plab = QLabel("List to print")
+        plab = QLabel("List")
         plab.setObjectName("fieldLabel")
-        plab.setFixedWidth(100)
-        prow.addWidget(plab)
-        prow.addWidget(self._print_batch, stretch=1)
-        pl.addLayout(prow)
-
-        lay_row = QHBoxLayout()
+        ppl.addWidget(plab)
+        ppl.addWidget(self._print_batch)
         lay_lab = QLabel("Layout")
         lay_lab.setObjectName("fieldLabel")
-        lay_lab.setFixedWidth(100)
+        ppl.addWidget(lay_lab)
         self._print_layout_combo = QComboBox()
         self._print_layout_combo.setObjectName("printLayoutCombo")
         self._print_layout_combo.addItem("US #10 envelope", "envelope")
         self._print_layout_combo.addItem("US Letter (8.5 × 11 in)", "us_letter")
         self._print_layout_combo.addItem("A4 letter", "a4")
-        lay_row.addWidget(lay_lab)
-        lay_row.addWidget(self._print_layout_combo, stretch=1)
-        pl.addLayout(lay_row)
-
+        ppl.addWidget(self._print_layout_combo)
         btn_pdf = QPushButton("Export PDF…")
-        btn_pdf.setMinimumHeight(44)
+        btn_pdf.setMinimumHeight(40)
         btn_pdf.clicked.connect(self._export_pdf)
-        pl.addWidget(btn_pdf)
-
+        ppl.addWidget(btn_pdf)
         btn_sample = QPushButton("Sample PDF (1 page)…")
-        btn_sample.setMinimumHeight(44)
+        btn_sample.setMinimumHeight(40)
         btn_sample.setToolTip(
             "Save one merged page as a PDF using the first row of the selected list (for proofs or email samples)."
         )
         btn_sample.clicked.connect(self._export_sample_pdf_from_print_page)
-        pl.addWidget(btn_sample)
-
+        ppl.addWidget(btn_sample)
         btn_print = QPushButton("Print all…")
         btn_print.setObjectName("primary")
-        btn_print.setMinimumHeight(44)
+        btn_print.setMinimumHeight(42)
         btn_print.clicked.connect(self._print_bulk)
-        pl.addWidget(btn_print)
-
-        hint = QLabel(
-            "Export PDF writes every row. Sample PDF (1 page) saves a single merged proof. "
-            "Page size follows the layout (envelope size, US Letter, or A4). For physical envelopes, load matching stock "
-            "and avoid “fit to page” scaling if alignment looks off."
+        ppl.addWidget(btn_print)
+        ph = QLabel(
+            "Export PDF writes every row. Sample PDF is one proof page. Page size follows the saved layout."
         )
-        hint.setObjectName("hint")
-        hint.setWordWrap(True)
-        pl.addWidget(hint)
+        ph.setObjectName("hint")
+        ph.setWordWrap(True)
+        ppl.addWidget(ph)
+        ppl.addStretch(1)
 
-        p_root.addWidget(print_card)
+        # —— Print page: center is open; use the left sidebar for actions
+        print_page = QWidget()
+        print_page.setObjectName("page")
+        p_root = QVBoxLayout(print_page)
+        p_root.setContentsMargins(14, 10, 14, 10)
+        p_root.setSpacing(12)
+        p_idle = QLabel(
+            "Use the left sidebar to pick a list, choose envelope / US Letter / A4 layout, then export or print."
+        )
+        p_idle.setObjectName("pageDesc")
+        p_idle.setWordWrap(True)
+        p_root.addWidget(p_idle)
         p_root.addStretch(1)
 
         # —— Shell: sidebar + stack
@@ -360,9 +352,9 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(236)
+        sidebar.setFixedWidth(300)
         sb_l = QVBoxLayout(sidebar)
-        sb_l.setContentsMargins(20, 24, 16, 20)
+        sb_l.setContentsMargins(14, 18, 12, 16)
         sb_l.setSpacing(4)
 
         brand = QLabel("Envelope Studio")
@@ -371,15 +363,15 @@ class MainWindow(QMainWindow):
         sub.setObjectName("brandSub")
         sb_l.addWidget(brand)
         sb_l.addWidget(sub)
-        sb_l.addSpacing(20)
+        sb_l.addSpacing(12)
 
         self._nav = QListWidget()
         self._nav.setObjectName("navList")
         self._nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for label, tip in (
-            ("Data", "Import CSV lists"),
-            ("Designer", "Envelope sizes, A4, or US Letter"),
-            ("Print", "Bulk to printer"),
+            ("Data", "Import and browse lists"),
+            ("Designer", "Edit layouts"),
+            ("Print", "Export PDF and print"),
         ):
             it = QListWidgetItem(label)
             it.setToolTip(tip)
@@ -388,6 +380,21 @@ class MainWindow(QMainWindow):
         self._nav.setFrameShape(QFrame.Shape.NoFrame)
         self._nav.currentRowChanged.connect(self._on_nav_changed)
         sb_l.addWidget(self._nav, stretch=1)
+
+        self._sidebar_stack = QStackedWidget()
+        self._sidebar_stack.addWidget(data_sidebar_page)
+        self._sidebar_stack.addWidget(designer_sidebar_page)
+        self._sidebar_stack.addWidget(print_sidebar_page)
+
+        self._sidebar_action_scroll = QScrollArea()
+        self._sidebar_action_scroll.setObjectName("appSidebarActionsScroll")
+        self._sidebar_action_scroll.setWidgetResizable(True)
+        self._sidebar_action_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._sidebar_action_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._sidebar_action_scroll.setWidget(self._sidebar_stack)
+        sb_l.addWidget(self._sidebar_action_scroll, stretch=2)
 
         self._stack = QStackedWidget()
         self._stack.setObjectName("stack")
@@ -429,6 +436,7 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, row: int) -> None:
         if row >= 0:
             self._stack.setCurrentIndex(row)
+            self._sidebar_stack.setCurrentIndex(row)
 
     def _build_menu(self) -> None:
         m = self.menuBar().addMenu("File")
