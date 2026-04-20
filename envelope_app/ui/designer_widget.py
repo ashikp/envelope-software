@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import shutil
 import uuid
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from PySide6.QtGui import (
     QFont,
     QMouseEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QResizeEvent,
@@ -74,6 +76,214 @@ UID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 # Readable default for new blocks (avoid decorative “Academy Engraved” as first combo pick).
 _DEFAULT_UI_FONT = "Arial"
+
+
+class HandleKind(enum.IntEnum):
+    """Bounding-box handle positions (Photoshop-style transform)."""
+
+    NW = 0
+    N = 1
+    NE = 2
+    E = 3
+    SE = 4
+    S = 5
+    SW = 6
+    W = 7
+
+
+# Explicit order — do not rely on IntEnum iteration for positioning vs. creation.
+_HANDLE_KIND_ORDER: tuple[HandleKind, ...] = (
+    HandleKind.NW,
+    HandleKind.N,
+    HandleKind.NE,
+    HandleKind.E,
+    HandleKind.SE,
+    HandleKind.S,
+    HandleKind.SW,
+    HandleKind.W,
+)
+
+
+HANDLE_SIZE_PT = 9.0
+# Layout items use z = 0, 1, 2, … ; handles must stay above every block or N/S get covered.
+HANDLE_Z = 1_000_000.0
+FRAME_Z = 999_990.0
+
+
+class SelectionFrameItem(QGraphicsRectItem):
+    """Dashed box is visual only; do not steal mouse from content below."""
+
+    def shape(self) -> QPainterPath:
+        return QPainterPath()
+
+
+def _cursor_for_handle(kind: HandleKind) -> Qt.CursorShape:
+    if kind in (HandleKind.N, HandleKind.S):
+        return Qt.CursorShape.SizeVerCursor
+    if kind in (HandleKind.E, HandleKind.W):
+        return Qt.CursorShape.SizeHorCursor
+    if kind in (HandleKind.NW, HandleKind.SE):
+        return Qt.CursorShape.SizeFDiagCursor
+    return Qt.CursorShape.SizeBDiagCursor
+
+
+class TransformHandleItem(QGraphicsRectItem):
+    """Eight Photoshop-style handles: box resize for images; width + corner moves for text."""
+
+    def __init__(
+        self,
+        kind: HandleKind,
+        target: QGraphicsItem,
+        on_change: Callable[[], None],
+    ) -> None:
+        super().__init__(0, 0, HANDLE_SIZE_PT, HANDLE_SIZE_PT)
+        self._kind = kind
+        self._target = target
+        self._on_change = on_change
+        self._press_scene: QPointF | None = None
+        self._start_rect = QRectF()
+        self._start_pos = QPointF()
+        self._start_w = 0.0
+        self._start_h = 0.0
+        self._start_text_w = 0.0
+        self._start_font_pt = 11.0
+
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(_cursor_for_handle(kind))
+        pen = QPen(QColor("#2563eb"), 1.2)
+        self.setPen(pen)
+        self.setBrush(QColor(255, 255, 255, 245))
+        self.setZValue(HANDLE_Z)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+
+    def _center_at(self, cx: float, cy: float) -> None:
+        r = self.rect()
+        self.setPos(cx - r.width() / 2.0, cy - r.height() / 2.0)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        self._press_scene = event.scenePos()
+        self._start_rect = self._target.sceneBoundingRect()
+        self._start_pos = self._target.pos()
+        if isinstance(self._target, TemplateTextItem):
+            tw = self._target.textWidth()
+            self._start_text_w = float(tw) if tw > 0 else self._start_rect.width()
+            f = self._target.font()
+            self._start_font_pt = float(f.pointSizeF() or f.pointSize() or 11)
+        elif isinstance(self._target, TemplateImageItem):
+            self._start_w = float(self._target._w)
+            self._start_h = float(self._target._h)
+        event.accept()
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if not (event.buttons() & Qt.MouseButton.LeftButton) or self._press_scene is None:
+            return super().mouseMoveEvent(event)
+        m = event.scenePos()
+        if isinstance(self._target, TemplateTextItem):
+            self._resize_text(m)
+        elif isinstance(self._target, TemplateImageItem):
+            self._resize_image(m)
+        if self._on_change:
+            self._on_change()
+        sc = self.scene()
+        if sc is not None and hasattr(sc, "sync_selection_chrome"):
+            sc.sync_selection_chrome()
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        self._press_scene = None
+        super().mouseReleaseEvent(event)
+
+    def _apply_text_font_scale(self, rel: float) -> None:
+        t = self._target
+        if not isinstance(t, TemplateTextItem):
+            return
+        pt = max(5.0, min(288.0, self._start_font_pt * rel))
+        f = QFont(t.font())
+        f.setPointSizeF(pt)
+        t.setFont(f)
+
+    def _resize_text(self, m: QPointF) -> None:
+        t = self._target
+        sr = self._start_rect
+        left, top, right, bottom = sr.left(), sr.top(), sr.right(), sr.bottom()
+        h0 = sr.height()
+        sy = self._start_pos.y()
+        sx = self._start_pos.x()
+        k = self._kind
+
+        if k == HandleKind.E:
+            new_w = max(48.0, m.x() - left)
+            t.setPos(QPointF(left, sy))
+            t.setTextWidth(new_w)
+        elif k == HandleKind.W:
+            new_w = max(48.0, right - m.x())
+            t.setPos(QPointF(m.x(), sy))
+            t.setTextWidth(new_w)
+        elif k == HandleKind.N:
+            if self._press_scene is not None:
+                dy = m.y() - self._press_scene.y()
+                self._apply_text_font_scale(1.0 - dy / 120.0)
+        elif k == HandleKind.S:
+            if self._press_scene is not None:
+                dy = m.y() - self._press_scene.y()
+                self._apply_text_font_scale(1.0 + dy / 120.0)
+        elif k == HandleKind.NE:
+            new_w = max(48.0, m.x() - left)
+            t.setPos(QPointF(left, m.y()))
+            t.setTextWidth(new_w)
+        elif k == HandleKind.NW:
+            new_w = max(48.0, right - m.x())
+            t.setPos(QPointF(m.x(), m.y()))
+            t.setTextWidth(new_w)
+        elif k == HandleKind.SE:
+            new_w = max(48.0, m.x() - left)
+            t.setPos(QPointF(left, m.y() - h0))
+            t.setTextWidth(new_w)
+        elif k == HandleKind.SW:
+            new_w = max(48.0, right - m.x())
+            t.setPos(QPointF(m.x(), m.y() - h0))
+            t.setTextWidth(new_w)
+
+    def _resize_image(self, m: QPointF) -> None:
+        img = self._target
+        sr = self._start_rect
+        left, top, right, bottom = sr.left(), sr.top(), sr.right(), sr.bottom()
+        k = self._kind
+
+        def set_box_at(x: float, y: float, w: float, h: float) -> None:
+            w = max(24.0, w)
+            h = max(24.0, h)
+            img.setPos(QPointF(x, y))
+            img.set_box_size(w, h)
+
+        if k == HandleKind.E:
+            set_box_at(left, top, m.x() - left, self._start_h)
+        elif k == HandleKind.W:
+            nw = right - m.x()
+            set_box_at(m.x(), top, nw, self._start_h)
+        elif k == HandleKind.S:
+            set_box_at(left, top, self._start_w, m.y() - top)
+        elif k == HandleKind.N:
+            nh = bottom - m.y()
+            set_box_at(left, m.y(), self._start_w, nh)
+        elif k == HandleKind.NW:
+            nw, nh = right - m.x(), bottom - m.y()
+            set_box_at(m.x(), m.y(), nw, nh)
+        elif k == HandleKind.NE:
+            nw, nh = m.x() - left, bottom - m.y()
+            set_box_at(left, m.y(), nw, nh)
+        elif k == HandleKind.SW:
+            nw, nh = right - m.x(), m.y() - top
+            set_box_at(m.x(), top, nw, nh)
+        elif k == HandleKind.SE:
+            nw, nh = m.x() - left, m.y() - top
+            set_box_at(left, top, nw, nh)
+
+
 
 
 def _show_layout_context_menu(
@@ -200,6 +410,11 @@ class TemplateImageItem(QGraphicsPixmapItem):
         self._h = w * (oh / ow)
         self._apply_scaled()
 
+    def set_box_size(self, w: float, h: float) -> None:
+        self._w = max(24.0, w)
+        self._h = max(24.0, h)
+        self._apply_scaled()
+
     def to_image_element(self) -> ImageElement:
         return ImageElement(
             uid=str(self.data(UID_ROLE)),
@@ -244,56 +459,6 @@ class TemplateImageItem(QGraphicsPixmapItem):
             self._on_change()
 
 
-class ResizeHandleItem(QGraphicsRectItem):
-    """Right-edge handle to resize width (text wrap column or image width)."""
-
-    def __init__(
-        self,
-        apply_width: Callable[[float], None],
-        on_change: Callable[[], None],
-        start_width_fn: Callable[[], float],
-    ) -> None:
-        super().__init__()
-        self._apply_width = apply_width
-        self._on_change = on_change
-        self._start_width_fn = start_width_fn
-        self._press_scene_x: float | None = None
-        self._start_w: float = 0.0
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self.setPen(QPen(QColor("#4338ca"), 1))
-        self.setBrush(QColor(238, 242, 255, 230))
-        self.setZValue(11)
-        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-
-    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._press_scene_x = event.scenePos().x()
-            self._start_w = self._start_width_fn()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        if event.buttons() & Qt.MouseButton.LeftButton and self._press_scene_x is not None:
-            dx = event.scenePos().x() - self._press_scene_x
-            new_w = max(48.0, self._start_w + dx)
-            self._apply_width(new_w)
-            self._on_change()
-            sc = self.scene()
-            if sc is not None and hasattr(sc, "sync_selection_chrome"):
-                sc.sync_selection_chrome()
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        self._press_scene_x = None
-        super().mouseReleaseEvent(event)
-
-
 class EnvelopeScene(QGraphicsScene):
     layout_element_context = Signal(QGraphicsItem, str)
 
@@ -301,8 +466,8 @@ class EnvelopeScene(QGraphicsScene):
         super().__init__()
         self._on_change: Callable[[], None] | None = None
         self._border: QGraphicsRectItem | None = None
-        self._chrome_frame: QGraphicsRectItem | None = None
-        self._chrome_handle: ResizeHandleItem | None = None
+        self._chrome_frame: SelectionFrameItem | None = None
+        self._chrome_handles: list[TransformHandleItem] = []
         self._chrome_target: QGraphicsItem | None = None
         self.setBackgroundBrush(QColor(255, 254, 249))
         self.set_page_size(PAGE_W_PT, PAGE_H_PT)
@@ -338,42 +503,24 @@ class EnvelopeScene(QGraphicsScene):
         if self._chrome_frame is not None:
             self.removeItem(self._chrome_frame)
             self._chrome_frame = None
-        if self._chrome_handle is not None:
-            self.removeItem(self._chrome_handle)
-            self._chrome_handle = None
+        for h in self._chrome_handles:
+            self.removeItem(h)
+        self._chrome_handles.clear()
 
     def _set_selection_chrome(self, target: QGraphicsItem) -> None:
         self._clear_selection_chrome()
         self._chrome_target = target
-        self._chrome_frame = QGraphicsRectItem()
-        self._chrome_frame.setZValue(10)
+        self._chrome_frame = SelectionFrameItem()
+        self._chrome_frame.setZValue(FRAME_Z)
         self._chrome_frame.setPen(QPen(QColor("#6366f1"), 1.5, Qt.PenStyle.DashLine))
         self._chrome_frame.setBrush(Qt.BrushStyle.NoBrush)
         self._chrome_frame.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.addItem(self._chrome_frame)
 
-        if isinstance(target, TemplateTextItem):
-
-            def start_w() -> float:
-                tw = target.textWidth()
-                return float(tw) if tw > 0 else target.boundingRect().width()
-
-            self._chrome_handle = ResizeHandleItem(
-                lambda w: target.setTextWidth(w),
-                self._emit_layout,
-                start_w,
-            )
-        elif isinstance(target, TemplateImageItem):
-            self._chrome_handle = ResizeHandleItem(
-                lambda w: target.set_box_width(w),
-                self._emit_layout,
-                lambda: float(target._w),
-            )
-        else:
-            self._chrome_handle = None
-
-        if self._chrome_handle is not None:
-            self.addItem(self._chrome_handle)
+        for kind in _HANDLE_KIND_ORDER:
+            h = TransformHandleItem(kind, target, self._emit_layout)
+            self.addItem(h)
+            self._chrome_handles.append(h)
         self.sync_selection_chrome()
 
     def sync_selection_chrome(self) -> None:
@@ -389,10 +536,30 @@ class EnvelopeScene(QGraphicsScene):
         pad = 3.0
         self._chrome_frame.setPos(br.x() - pad, br.y() - pad)
         self._chrome_frame.setRect(0, 0, br.width() + 2 * pad, br.height() + 2 * pad)
-        if self._chrome_handle is not None:
-            hw, hh = 10.0, 30.0
-            self._chrome_handle.setPos(br.right() - hw, br.center().y() - hh * 0.5)
-            self._chrome_handle.setRect(0, 0, hw, hh)
+        fl = br.x() - pad
+        ft = br.y() - pad
+        fr = br.right() + pad
+        fb = br.bottom() + pad
+        mid_x = (fl + fr) * 0.5
+        mid_y = (ft + fb) * 0.5
+        for h in self._chrome_handles:
+            kind = h._kind
+            if kind == HandleKind.NW:
+                h._center_at(fl, ft)
+            elif kind == HandleKind.N:
+                h._center_at(mid_x, ft)
+            elif kind == HandleKind.NE:
+                h._center_at(fr, ft)
+            elif kind == HandleKind.E:
+                h._center_at(fr, mid_y)
+            elif kind == HandleKind.SE:
+                h._center_at(fr, fb)
+            elif kind == HandleKind.S:
+                h._center_at(mid_x, fb)
+            elif kind == HandleKind.SW:
+                h._center_at(fl, fb)
+            else:  # W
+                h._center_at(fl, mid_y)
 
     def set_page_size(self, pw: float, ph: float) -> None:
         if self._border is not None:
@@ -401,6 +568,7 @@ class EnvelopeScene(QGraphicsScene):
         self.setSceneRect(0, 0, pw, ph)
         border = self.addRect(QRectF(0, 0, pw, ph), QPen(QColor(148, 163, 184), 1.0))
         border.setZValue(-1)
+        border.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._border = border
         self.sync_selection_chrome()
 
@@ -505,6 +673,22 @@ class DesignerGraphicsView(QGraphicsView):
         super().__init__(scene, parent)
         self.setAcceptDrops(True)
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            hit_content = False
+            for it in self.items(event.pos()):
+                if isinstance(it, TransformHandleItem):
+                    hit_content = True
+                    break
+                if isinstance(it, (TemplateTextItem, TemplateImageItem)) and it.data(UID_ROLE):
+                    hit_content = True
+                    break
+            if not hit_content:
+                self.scene().clearSelection()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         scene_pos = self.mapToScene(event.pos())
         item = self.scene().itemAt(scene_pos, self.transform())
@@ -512,7 +696,7 @@ class DesignerGraphicsView(QGraphicsView):
             return super().contextMenuEvent(event)
         if isinstance(item, TemplateImageItem) and item.data(UID_ROLE):
             return super().contextMenuEvent(event)
-        if isinstance(item, ResizeHandleItem):
+        if isinstance(item, TransformHandleItem):
             return super().contextMenuEvent(event)
         menu = QMenu(self)
         act_add = menu.addAction("Add text block")
@@ -904,7 +1088,7 @@ class DesignerWidget(QWidget):
             "QGraphicsView#designerGraphicsView { background: transparent; border: none; }"
         )
         self._view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+        self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
         self._view.setMinimumHeight(300)
         self._view.setMinimumWidth(400)
         self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
