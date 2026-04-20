@@ -384,13 +384,31 @@ QTextEdit#mergeTemplateEditor {
     background: #ffffff;
     color: #0f172a;
     font-size: 13px;
-    min-height: 140px;
+    min-height: 100px;
 }
 /* Do not style QGraphicsView globally — breaks scene painting. Use #designerCanvasFrame. */
 QFrame#designerCanvasFrame {
     background: #e8ecf3;
     border: 1px solid #cbd5e1;
     border-radius: 10px;
+}
+QWidget#designerRuler {
+    background: #f8fafc;
+    color: #64748b;
+}
+QToolButton#designerRulerCorner {
+    background: #f1f5f9;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 600;
+    border: none;
+    border-right: 1px solid #e2e8f0;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 0;
+}
+QToolButton#designerRulerCorner:hover {
+    background: #e2e8f0;
+    color: #0f172a;
 }
 QSplitter#designerSplit::handle {
     background: #e2e8f0;

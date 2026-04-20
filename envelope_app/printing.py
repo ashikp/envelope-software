@@ -133,7 +133,9 @@ def export_pdf(
     records: list[dict[str, Any]],
 ) -> bool:
     """
-    Write one #10-sized page per record to a PDF file (vector-friendly via QPrinter PDF).
+    Write one page per record to a PDF (#10 or A4 to match layout_json).
+
+    Pass a single-item list to export one sample page, e.g. ``export_pdf(path, layout, [row])``.
     """
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)

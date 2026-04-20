@@ -68,8 +68,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._db = db
         self.setWindowTitle("Envelope Studio")
-        self.resize(1280, 840)
-        self.setMinimumSize(980, 640)
+        self.resize(1440, 900)
+        self.setMinimumSize(1024, 700)
         self._app_drop_filter_installed = False
 
         self._batch_combo = QComboBox()
@@ -180,8 +180,8 @@ class MainWindow(QMainWindow):
         designer_page = QWidget()
         designer_page.setObjectName("page")
         z_root = QVBoxLayout(designer_page)
-        z_root.setContentsMargins(32, 28, 32, 24)
-        z_root.setSpacing(16)
+        z_root.setContentsMargins(24, 18, 24, 14)
+        z_root.setSpacing(10)
 
         top_bar = QHBoxLayout()
         top_bar.addWidget(
@@ -199,9 +199,16 @@ class MainWindow(QMainWindow):
         self._btn_save_a4.clicked.connect(self._save_a4_template)
         self._btn_fit = QPushButton("Fit view")
         self._btn_fit.clicked.connect(self._fit_active_designer)
+        self._btn_sample_pdf = QPushButton("Sample PDF…")
+        self._btn_sample_pdf.setToolTip(
+            "Export a single-page PDF for sharing. If a list is loaded, uses the preview row; "
+            "otherwise merge fields are left empty."
+        )
+        self._btn_sample_pdf.clicked.connect(self._export_sample_pdf_from_designer)
         top_bar.addWidget(self._btn_save_env, alignment=Qt.AlignmentFlag.AlignTop)
         top_bar.addWidget(self._btn_save_a4, alignment=Qt.AlignmentFlag.AlignTop)
         top_bar.addWidget(self._btn_fit, alignment=Qt.AlignmentFlag.AlignTop)
+        top_bar.addWidget(self._btn_sample_pdf, alignment=Qt.AlignmentFlag.AlignTop)
         z_root.addLayout(top_bar)
 
         del_row = QHBoxLayout()
@@ -244,8 +251,8 @@ class MainWindow(QMainWindow):
         preview_bar.addStretch(1)
         z_root.addLayout(preview_bar)
         z_root.addWidget(self._designer_stack, stretch=1)
-        self._designer_env.setMinimumHeight(420)
-        self._designer_a4.setMinimumHeight(420)
+        self._designer_env.setMinimumHeight(520)
+        self._designer_a4.setMinimumHeight(520)
 
         # —— Print page
         print_page = QWidget()
@@ -293,6 +300,14 @@ class MainWindow(QMainWindow):
         btn_pdf.clicked.connect(self._export_pdf)
         pl.addWidget(btn_pdf)
 
+        btn_sample = QPushButton("Sample PDF (1 page)…")
+        btn_sample.setMinimumHeight(44)
+        btn_sample.setToolTip(
+            "Save one merged page as a PDF using the first row of the selected list (for proofs or email samples)."
+        )
+        btn_sample.clicked.connect(self._export_sample_pdf_from_print_page)
+        pl.addWidget(btn_sample)
+
         btn_print = QPushButton("Print all…")
         btn_print.setObjectName("primary")
         btn_print.setMinimumHeight(44)
@@ -300,8 +315,9 @@ class MainWindow(QMainWindow):
         pl.addWidget(btn_print)
 
         hint = QLabel(
-            "PDF page size matches the layout you pick (#10 or A4). For physical envelopes, load #10 stock "
-            "and avoid “fit to page” scaling if alignment looks off."
+            "Export PDF writes every row. Sample PDF (1 page) saves a single merged proof. "
+            "Page size follows the layout (#10 or A4). For physical envelopes, load #10 stock and avoid "
+            "“fit to page” scaling if alignment looks off."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -782,6 +798,54 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", str(e))
             return
         self.statusBar().showMessage(f"Saved PDF: {path}", 6000)
+
+    def _export_one_page_pdf(self, *, kind: str, row: dict[str, Any]) -> None:
+        """Write a single-page PDF using the current saved layout for envelope or A4."""
+        if not self._ensure_layout_saved_for_kind(kind):
+            return
+        layout_json = (
+            self._designer_a4.layout_json() if kind == "a4" else self._designer_env.layout_json()
+        )
+        default_name = "a4-sample.pdf" if kind == "a4" else "envelope-sample.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export sample PDF (one page)",
+            str(Path.home() / default_name),
+            "PDF (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            export_pdf(path, layout_json, [row])
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Export failed", str(e))
+            return
+        self.statusBar().showMessage(f"Saved sample PDF (1 page): {path}", 6000)
+
+    def _export_sample_pdf_from_designer(self) -> None:
+        """Uses Design for (#10 vs A4) and the preview row when a list is loaded."""
+        kind = str(self._designer_mode.currentData() or "envelope")
+        row = self._current_preview_row() or {}
+        self._export_one_page_pdf(kind=kind, row=row)
+
+    def _export_sample_pdf_from_print_page(self) -> None:
+        """Uses Print tab layout and the first row of the selected batch."""
+        bid = self._print_batch.currentData()
+        if bid is None:
+            QMessageBox.information(
+                self,
+                "Sample PDF",
+                "Select a mailing list first (or use Sample PDF on the Designer tab for a blank merge).",
+            )
+            return
+        records = [r.payload for r in self._db.get_records(int(bid))]
+        if not records:
+            QMessageBox.information(self, "Sample PDF", "That list has no rows to merge.")
+            return
+        kind = str(self._print_layout_combo.currentData() or "envelope")
+        self._export_one_page_pdf(kind=kind, row=records[0])
 
     def _print_bulk(self, *, show_dialog: bool = True) -> None:
         bid = self._print_batch.currentData()

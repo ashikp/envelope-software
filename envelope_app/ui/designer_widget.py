@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import enum
+import math
 import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QMimeData, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QMimeData, Signal
 from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -17,6 +18,7 @@ from PySide6.QtGui import (
     QDropEvent,
     QFont,
     QMouseEvent,
+    QPaintEvent,
     QPainter,
     QPainterPath,
     QPen,
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QFontComboBox,
     QFrame,
     QFileDialog,
+    QGridLayout,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -44,6 +47,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QSizePolicy,
     QSplitter,
     QSpinBox,
@@ -333,9 +337,18 @@ class TemplateTextItem(QGraphicsTextItem):
         super().__init__(text)
         self._on_change = on_change
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        # Single click = select / move / resize; double-click opens in-canvas editing.
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+
+    def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        super().mouseDoubleClickEvent(event)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: object) -> object:
         result = super().itemChange(change, value)
+        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged and not value:
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self._on_change:
             self._on_change()
         if change in (
@@ -585,7 +598,7 @@ class EnvelopeScene(QGraphicsScene):
         item = TemplateTextItem(el.text, self._on_change)
         item.setData(UID_ROLE, el.uid)
         item.setDefaultTextColor(QColor("#0f172a"))
-        item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        item.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         item.setFont(self._font_from_element(el))
         item.setTextWidth(el.w)
         item.setPos(QPointF(el.x, el.y))
@@ -662,6 +675,214 @@ class MergeFieldChip(QPushButton):
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         self._drag_start = None
         super().mouseReleaseEvent(e)
+
+
+RULER_THICKNESS = 28
+# Layout scene coords are typographic points; 72 pt = 1 inch (PDF/print convention).
+PT_PER_INCH = 72.0
+
+
+def _nice_step(raw: float) -> float:
+    if raw <= 0:
+        return 1.0
+    exp = math.floor(math.log10(raw))
+    base = 10.0**exp
+    for f in (1, 2, 5, 10):
+        step = float(f) * base
+        if step >= raw * 0.999:
+            return step
+    return float(10 * base)
+
+
+def _fmt_scene_tick(v: float) -> str:
+    if abs(v) >= 100:
+        return str(int(round(v)))
+    if abs(v) >= 10:
+        return str(int(round(v)))
+    s = f"{v:.1f}"
+    if s.endswith(".0"):
+        return s[:-2]
+    return s
+
+
+def _fmt_inch_tick(v: float) -> str:
+    if abs(v) >= 100:
+        return f"{v:.0f}"
+    s = f"{v:.3f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+class _RulerViewportFilter(QObject):
+    def __init__(self, fn: Callable[[], None]) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
+        if ev.type() == QEvent.Type.Resize:
+            self._fn()
+        return False
+
+
+class CanvasRuler(QWidget):
+    """Rulers: scene space is in points; labels show points or inches (72 pt = 1 in)."""
+
+    def __init__(
+        self,
+        view: QGraphicsView,
+        horizontal: bool,
+        parent: QWidget | None = None,
+        *,
+        use_inches: Callable[[], bool],
+    ) -> None:
+        super().__init__(parent)
+        self._view = view
+        self._horizontal = horizontal
+        self._use_inches = use_inches
+        self.setObjectName("designerRuler")
+        if horizontal:
+            self.setFixedHeight(RULER_THICKNESS)
+        else:
+            self.setFixedWidth(RULER_THICKNESS)
+
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.fillRect(self.rect(), QColor(248, 250, 252))
+
+        view = self._view
+        vp = view.viewport()
+        vr = vp.rect()
+        if vr.width() < 1 or vr.height() < 1:
+            painter.setPen(QPen(QColor(226, 232, 240)))
+            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            return
+
+        # PySide6: mapToScene accepts QPoint / int coords, not QPointF.
+        tl = view.mapToScene(vr.topLeft())
+        br = view.mapToScene(vr.bottomRight())
+        xmin, xmax = min(tl.x(), br.x()), max(tl.x(), br.x())
+        ymin, ymax = min(tl.y(), br.y()), max(tl.y(), br.y())
+        span_x = xmax - xmin
+        span_y = ymax - ymin
+        if span_x < 1e-9:
+            span_x = 1.0
+        if span_y < 1e-9:
+            span_y = 1.0
+
+        w_px = max(1, self.width())
+        h_px = max(1, self.height())
+        edge = QColor(226, 232, 240)
+        tick_maj = QColor(100, 116, 139)
+        tick_min = QColor(203, 213, 225)
+
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        inch = self._use_inches()
+
+        if self._horizontal:
+            painter.setPen(QPen(edge))
+            painter.drawLine(0, h_px - 1, w_px, h_px - 1)
+            if inch:
+                umin, umax = xmin / PT_PER_INCH, xmax / PT_PER_INCH
+                span_u = max(umax - umin, 1e-9)
+                spp_u = span_u / float(w_px)
+                major_u = _nice_step(64.0 * spp_u)
+                minor_u = major_u / 5.0 if major_u > 1e-9 else major_u
+                painter.setPen(QPen(tick_min))
+                t = math.floor(umin / minor_u) * minor_u
+                while t <= umax + minor_u * 0.5:
+                    x_scene = t * PT_PER_INCH
+                    px = (x_scene - xmin) / span_x * w_px
+                    if -2 <= px <= w_px + 2:
+                        on_major = math.isclose(t / major_u, round(t / major_u), rel_tol=0, abs_tol=1e-6)
+                        h_tick = h_px * 0.42 if on_major else h_px * 0.22
+                        painter.drawLine(int(px), h_px - 1, int(px), int(h_px - 1 - h_tick))
+                    t += minor_u
+                painter.setPen(QPen(tick_maj))
+                t = math.floor(umin / major_u) * major_u
+                while t <= umax + major_u * 0.5:
+                    x_scene = t * PT_PER_INCH
+                    px = (x_scene - xmin) / span_x * w_px
+                    if 4 <= px <= w_px - 4:
+                        painter.drawText(int(px) + 2, int(h_px * 0.62), _fmt_inch_tick(t))
+                    t += major_u
+            else:
+                spp = span_x / float(w_px)
+                major = _nice_step(64.0 * spp)
+                minor = major / 5.0 if major > 1e-6 else major
+                painter.setPen(QPen(tick_min))
+                x = math.floor(xmin / minor) * minor
+                while x <= xmax + minor * 0.5:
+                    px = (x - xmin) / span_x * w_px
+                    if -2 <= px <= w_px + 2:
+                        on_major = math.isclose(x / major, round(x / major), rel_tol=0, abs_tol=1e-3)
+                        h_tick = h_px * 0.42 if on_major else h_px * 0.22
+                        painter.drawLine(int(px), h_px - 1, int(px), int(h_px - 1 - h_tick))
+                    x += minor
+                painter.setPen(QPen(tick_maj))
+                x = math.floor(xmin / major) * major
+                while x <= xmax + major * 0.5:
+                    px = (x - xmin) / span_x * w_px
+                    if 4 <= px <= w_px - 4:
+                        painter.drawText(int(px) + 2, int(h_px * 0.62), _fmt_scene_tick(x))
+                    x += major
+        else:
+            painter.setPen(QPen(edge))
+            painter.drawLine(w_px - 1, 0, w_px - 1, h_px)
+            if inch:
+                umin, umax = ymin / PT_PER_INCH, ymax / PT_PER_INCH
+                span_u = max(umax - umin, 1e-9)
+                spp_u = span_u / float(h_px)
+                major_u = _nice_step(64.0 * spp_u)
+                minor_u = major_u / 5.0 if major_u > 1e-9 else major_u
+                painter.setPen(QPen(tick_min))
+                t = math.floor(umin / minor_u) * minor_u
+                while t <= umax + minor_u * 0.5:
+                    y_scene = t * PT_PER_INCH
+                    py = (y_scene - ymin) / span_y * h_px
+                    if -2 <= py <= h_px + 2:
+                        on_major = math.isclose(t / major_u, round(t / major_u), rel_tol=0, abs_tol=1e-6)
+                        w_tick = w_px * 0.42 if on_major else w_px * 0.22
+                        painter.drawLine(w_px - 1, int(py), int(w_px - 1 - w_tick), int(py))
+                    t += minor_u
+                painter.setPen(QPen(tick_maj))
+                t = math.floor(umin / major_u) * major_u
+                while t <= umax + major_u * 0.5:
+                    y_scene = t * PT_PER_INCH
+                    py = (y_scene - ymin) / span_y * h_px
+                    if 6 <= py <= h_px - 10:
+                        painter.save()
+                        painter.translate(int(w_px * 0.35), int(py))
+                        painter.rotate(-90.0)
+                        painter.drawText(0, 0, _fmt_inch_tick(t))
+                        painter.restore()
+                    t += major_u
+            else:
+                spp_y = span_y / float(h_px)
+                major = _nice_step(64.0 * spp_y)
+                minor = major / 5.0 if major > 1e-6 else major
+                painter.setPen(QPen(tick_min))
+                y = math.floor(ymin / minor) * minor
+                while y <= ymax + minor * 0.5:
+                    py = (y - ymin) / span_y * h_px
+                    if -2 <= py <= h_px + 2:
+                        on_major = math.isclose(y / major, round(y / major), rel_tol=0, abs_tol=1e-3)
+                        w_tick = w_px * 0.42 if on_major else w_px * 0.22
+                        painter.drawLine(w_px - 1, int(py), int(w_px - 1 - w_tick), int(py))
+                    y += minor
+                painter.setPen(QPen(tick_maj))
+                y = math.floor(ymin / major) * major
+                while y <= ymax + major * 0.5:
+                    py = (y - ymin) / span_y * h_px
+                    if 6 <= py <= h_px - 10:
+                        painter.save()
+                        painter.translate(int(w_px * 0.35), int(py))
+                        painter.rotate(-90.0)
+                        painter.drawText(0, 0, _fmt_scene_tick(y))
+                        painter.restore()
+                    y += major
 
 
 class DesignerGraphicsView(QGraphicsView):
@@ -797,7 +1018,7 @@ class DesignerWidget(QWidget):
         self._editor.setObjectName("mergeTemplateEditor")
         self._editor.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self._editor.setPlaceholderText("{name}\n{phone}\n{tracking_number}")
-        self._editor.setMinimumHeight(140)
+        self._editor.setMinimumHeight(100)
         self._editor.textChanged.connect(self._on_editor_changed)
 
         self._scene.selectionChanged.connect(self._on_selection)
@@ -866,8 +1087,8 @@ class DesignerWidget(QWidget):
 
         nav_frame = QFrame()
         nav_frame.setObjectName("layerNavigator")
-        nav_frame.setMinimumWidth(180)
-        nav_frame.setMaximumWidth(300)
+        nav_frame.setMinimumWidth(160)
+        nav_frame.setMaximumWidth(260)
         nvl = QVBoxLayout(nav_frame)
         nvl.setContentsMargins(0, 0, 0, 0)
         nvl.setSpacing(6)
@@ -882,21 +1103,49 @@ class DesignerWidget(QWidget):
 
         canvas_frame = QFrame()
         canvas_frame.setObjectName("designerCanvasFrame")
-        cfl = QVBoxLayout(canvas_frame)
+
+        self._ruler_inches = True
+        self._ruler_unit_btn = QToolButton()
+        self._ruler_unit_btn.setObjectName("designerRulerCorner")
+        self._ruler_unit_btn.setFixedSize(RULER_THICKNESS, RULER_THICKNESS)
+        self._ruler_unit_btn.setText("in")
+        self._ruler_unit_btn.setAutoRaise(True)
+        self._ruler_unit_btn.setToolTip(
+            "Ruler units: inches (72 pt = 1 in). Click to switch to typographic points (layout JSON units)."
+        )
+        self._ruler_unit_btn.clicked.connect(self._toggle_ruler_unit)
+
+        self._ruler_h = CanvasRuler(
+            self._view, True, canvas_frame, use_inches=lambda: self._ruler_inches
+        )
+        self._ruler_v = CanvasRuler(
+            self._view, False, canvas_frame, use_inches=lambda: self._ruler_inches
+        )
+
+        cfl = QGridLayout(canvas_frame)
         cfl.setContentsMargins(0, 0, 0, 0)
-        cfl.addWidget(self._view)
+        cfl.setSpacing(0)
+        cfl.addWidget(self._ruler_unit_btn, 0, 0)
+        cfl.addWidget(self._ruler_h, 0, 1)
+        cfl.addWidget(self._ruler_v, 1, 0)
+        cfl.addWidget(self._view, 1, 1)
+        cfl.setColumnStretch(1, 1)
+        cfl.setRowStretch(1, 1)
 
         props = QFrame()
         props.setObjectName("propsPanel")
-        props.setMinimumWidth(280)
-        props.setMaximumWidth(420)
+        props.setMinimumWidth(240)
+        props.setMaximumWidth(360)
         pv = QVBoxLayout(props)
         pv.setContentsMargins(16, 16, 16, 16)
         pv.setSpacing(8)
 
         pt = QLabel("SELECTED BLOCK")
         pt.setObjectName("propsTitle")
-        self._hint = QLabel("Click a block on the envelope, then edit merge fields below.")
+        self._hint = QLabel(
+            "Single-click a block to move or resize; double-click text to edit on canvas. "
+            "Or edit the merge template below."
+        )
         self._hint.setObjectName("hint")
         self._hint.setWordWrap(True)
 
@@ -925,11 +1174,11 @@ class DesignerWidget(QWidget):
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 3)
         split.setStretchFactor(2, 1)
-        split.setSizes([220, 780, 320])
+        split.setSizes([180, 1100, 260])
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(10)
+        col.setSpacing(6)
         col.addLayout(row1)
         col.addLayout(row2)
         col.addWidget(self._fields_bar)
@@ -937,8 +1186,27 @@ class DesignerWidget(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+        self._ruler_filter = _RulerViewportFilter(self._update_rulers)
+        self._view.viewport().installEventFilter(self._ruler_filter)
+        self._view.horizontalScrollBar().valueChanged.connect(lambda *_: self._update_rulers())
+        self._view.verticalScrollBar().valueChanged.connect(lambda *_: self._update_rulers())
+
         self.layout_changed.connect(self._refresh_layer_navigator)
         self._refresh_layer_navigator()
+
+    def _update_rulers(self) -> None:
+        self._ruler_h.update()
+        self._ruler_v.update()
+
+    def _toggle_ruler_unit(self) -> None:
+        self._ruler_inches = not self._ruler_inches
+        self._ruler_unit_btn.setText("in" if self._ruler_inches else "pt")
+        self._ruler_unit_btn.setToolTip(
+            "Ruler units: typographic points (JSON x/y/w/h). Click to switch to inches."
+            if not self._ruler_inches
+            else "Ruler units: inches. Click to switch to points."
+        )
+        self._update_rulers()
 
     def set_column_keys(self, keys: list[str]) -> None:
         """Show clickable {column} chips from the active import (same order as the Data table)."""
@@ -1089,8 +1357,8 @@ class DesignerWidget(QWidget):
         )
         self._view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self._view.setMinimumHeight(300)
-        self._view.setMinimumWidth(400)
+        self._view.setMinimumHeight(420)
+        self._view.setMinimumWidth(360)
         self._view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         rh = QPainter.RenderHint
@@ -1108,9 +1376,13 @@ class DesignerWidget(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        if self._layout_kind == LAYOUT_KIND_A4:
-            return
-        self.fit_view()
+        if self._layout_kind != LAYOUT_KIND_A4:
+            self.fit_view()
+        self._update_rulers()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_rulers()
 
     def _selected_text_item(self) -> TemplateTextItem | None:
         for it in self._scene.selectedItems():
@@ -1408,3 +1680,4 @@ class DesignerWidget(QWidget):
             self._view.verticalScrollBar().setValue(self._view.verticalScrollBar().minimum())
         else:
             self._view.fitInView(r, Qt.AspectRatioMode.KeepAspectRatio)
+        self._update_rulers()
