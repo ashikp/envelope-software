@@ -37,9 +37,12 @@ from envelope_app.version import VERSION
 from envelope_app.record_import import load_records_file
 from envelope_app.layout import (
     LAYOUT_KIND_A4,
+    LAYOUT_KIND_ENVELOPE,
     LAYOUT_KIND_US_LETTER,
+    LABEL_DT_THERMAL_ID,
     default_a4_layout,
     default_layout,
+    default_thermal_label_layout,
     default_us_letter_layout,
 )
 from envelope_app.printing import export_pdf, print_records
@@ -48,6 +51,7 @@ from envelope_app.ui.designer_widget import DesignerWidget
 TEMPLATE_ENVELOPE = "default"
 TEMPLATE_A4 = "a4"
 TEMPLATE_US_LETTER = "us_letter"
+TEMPLATE_THERMAL_LABEL = "thermal_label"
 
 APP_CREDIT = "Developed by Md Ashikur Rahman"
 
@@ -120,19 +124,28 @@ class MainWindow(QMainWindow):
         self._designer_env = DesignerWidget()
         self._designer_a4 = DesignerWidget(layout_kind=LAYOUT_KIND_A4)
         self._designer_letter = DesignerWidget(layout_kind=LAYOUT_KIND_US_LETTER)
+        self._designer_thermal = DesignerWidget(
+            layout_kind=LAYOUT_KIND_ENVELOPE,
+            envelope_size_id=LABEL_DT_THERMAL_ID,
+            lock_envelope_size=True,
+        )
         self._designer_env.layout_changed.connect(self._mark_dirty_envelope)
         self._designer_a4.layout_changed.connect(self._mark_dirty_a4)
         self._designer_letter.layout_changed.connect(self._mark_dirty_letter)
+        self._designer_thermal.layout_changed.connect(self._mark_dirty_thermal)
         self._designer_env.shortcode_copied.connect(self._on_shortcode_copied)
         self._designer_a4.shortcode_copied.connect(self._on_shortcode_copied)
         self._designer_letter.shortcode_copied.connect(self._on_shortcode_copied)
+        self._designer_thermal.shortcode_copied.connect(self._on_shortcode_copied)
 
         self._dirty_envelope = False
         self._dirty_a4 = False
         self._dirty_letter = False
+        self._dirty_thermal = False
         self._preview_backup_env: list[tuple[str, str]] = []
         self._preview_backup_a4: list[tuple[str, str]] = []
         self._preview_backup_letter: list[tuple[str, str]] = []
+        self._preview_backup_thermal: list[tuple[str, str]] = []
 
         # —— Data page
         data_page = QWidget()
@@ -204,18 +217,28 @@ class MainWindow(QMainWindow):
         self._btn_del_letter.setObjectName("danger")
         self._btn_del_letter.setMinimumHeight(32)
         self._btn_del_letter.clicked.connect(self._delete_us_letter_template)
+        self._btn_save_thermal = QPushButton("Save thermal label")
+        self._btn_save_thermal.setObjectName("primary")
+        self._btn_save_thermal.setMinimumHeight(36)
+        self._btn_save_thermal.clicked.connect(self._save_thermal_template)
+        self._btn_del_thermal = QPushButton("Delete thermal layout…")
+        self._btn_del_thermal.setObjectName("danger")
+        self._btn_del_thermal.setMinimumHeight(32)
+        self._btn_del_thermal.clicked.connect(self._delete_thermal_template)
 
         self._designer_mode = QComboBox()
         self._designer_mode.setObjectName("designerModeCombo")
         self._designer_mode.addItem("US #10 envelope", "envelope")
         self._designer_mode.addItem("A4 letter", "a4")
         self._designer_mode.addItem("US Letter (8.5 × 11 in)", "us_letter")
+        self._designer_mode.addItem("2.625 × 1 in Direct Thermal", "thermal_label")
         self._designer_mode.currentIndexChanged.connect(self._on_designer_mode_changed)
 
         self._designer_stack = QStackedWidget()
         self._designer_stack.addWidget(self._designer_env)
         self._designer_stack.addWidget(self._designer_a4)
         self._designer_stack.addWidget(self._designer_letter)
+        self._designer_stack.addWidget(self._designer_thermal)
         self._designer_stack.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding,
@@ -254,7 +277,8 @@ class MainWindow(QMainWindow):
         side_title.setObjectName("cardTitle")
         dsz.addWidget(side_title)
         side_hint = QLabel(
-            "Save each layout type separately. Same CSV merge fields for all. Envelope size is on the right panel."
+            "Pick a layout below; each has its own save slot. Thermal uses fixed 2.625″×1″ label stock "
+            "(envelope picker is for #10 layouts only)."
         )
         side_hint.setObjectName("hint")
         side_hint.setWordWrap(True)
@@ -267,6 +291,7 @@ class MainWindow(QMainWindow):
         dsz.addWidget(self._btn_save_env)
         dsz.addWidget(self._btn_save_a4)
         dsz.addWidget(self._btn_save_letter)
+        dsz.addWidget(self._btn_save_thermal)
         row_fit_sample = QHBoxLayout()
         row_fit_sample.setSpacing(6)
         row_fit_sample.addWidget(self._btn_fit, stretch=1)
@@ -276,6 +301,7 @@ class MainWindow(QMainWindow):
         dsz.addWidget(self._btn_del_env)
         dsz.addWidget(self._btn_del_a4)
         dsz.addWidget(self._btn_del_letter)
+        dsz.addWidget(self._btn_del_thermal)
         dsz.addSpacing(4)
         dsz.addWidget(self._preview_check)
         pr = QLabel("Preview row")
@@ -302,6 +328,7 @@ class MainWindow(QMainWindow):
         self._print_layout_combo = QComboBox()
         self._print_layout_combo.setObjectName("printLayoutCombo")
         self._print_layout_combo.addItem("US #10 envelope", "envelope")
+        self._print_layout_combo.addItem("2.625 × 1 in Direct Thermal", "thermal_label")
         self._print_layout_combo.addItem("US Letter (8.5 × 11 in)", "us_letter")
         self._print_layout_combo.addItem("A4 letter", "a4")
         ppl.addWidget(self._print_layout_combo)
@@ -472,11 +499,18 @@ class MainWindow(QMainWindow):
             return
         self._dirty_letter = True
 
+    def _mark_dirty_thermal(self) -> None:
+        if self._loading_template:
+            return
+        self._dirty_thermal = True
+
     def _layout_json_for_kind(self, kind: str) -> str:
         if kind == "a4":
             return self._designer_a4.layout_json()
         if kind == "us_letter":
             return self._designer_letter.layout_json()
+        if kind == "thermal_label":
+            return self._designer_thermal.layout_json()
         return self._designer_env.layout_json()
 
     def _on_shortcode_copied(self, text: str) -> None:
@@ -490,8 +524,10 @@ class MainWindow(QMainWindow):
             self._designer_env.fit_view()
         elif idx == 1:
             self._designer_a4.fit_view()
-        else:
+        elif idx == 2:
             self._designer_letter.fit_view()
+        else:
+            self._designer_thermal.fit_view()
 
     def _on_designer_mode_changed(self, index: int) -> None:
         self._designer_stack.setCurrentIndex(index)
@@ -499,8 +535,10 @@ class MainWindow(QMainWindow):
             self._designer_env.fit_view()
         elif index == 1:
             self._designer_a4.fit_view()
-        else:
+        elif index == 2:
             self._designer_letter.fit_view()
+        else:
+            self._designer_thermal.fit_view()
 
     def _load_template_from_db(self) -> None:
         self._loading_template = True
@@ -520,14 +558,21 @@ class MainWindow(QMainWindow):
                 self._designer_letter.load_layout_json(tl.layout_json)
             else:
                 self._designer_letter.load_layout_json(default_us_letter_layout())
+            tt = self._db.get_template(TEMPLATE_THERMAL_LABEL)
+            if tt:
+                self._designer_thermal.load_layout_json(tt.layout_json)
+            else:
+                self._designer_thermal.load_layout_json(default_thermal_label_layout())
             self._dirty_envelope = False
             self._dirty_a4 = False
             self._dirty_letter = False
+            self._dirty_thermal = False
         finally:
             self._loading_template = False
         self._designer_env.fit_view()
         self._designer_a4.fit_view()
         self._designer_letter.fit_view()
+        self._designer_thermal.fit_view()
 
     def _save_envelope_template(self) -> None:
         self._db.upsert_template(TEMPLATE_ENVELOPE, self._designer_env.layout_json())
@@ -543,6 +588,11 @@ class MainWindow(QMainWindow):
         self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
         self._dirty_letter = False
         self.statusBar().showMessage("US Letter template saved.", 4000)
+
+    def _save_thermal_template(self) -> None:
+        self._db.upsert_template(TEMPLATE_THERMAL_LABEL, self._designer_thermal.layout_json())
+        self._dirty_thermal = False
+        self.statusBar().showMessage("Direct thermal template saved.", 4000)
 
     def _delete_envelope_template(self) -> None:
         if (
@@ -622,6 +672,32 @@ class MainWindow(QMainWindow):
             self._apply_preview()
         self.statusBar().showMessage("US Letter template deleted; reset to default.", 5000)
 
+    def _delete_thermal_template(self) -> None:
+        if (
+            QMessageBox.question(
+                self,
+                "Delete thermal label template",
+                "Remove the saved 2.625″ × 1″ direct thermal layout from the database and reset to "
+                "the default starting layout?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self._db.delete_template(TEMPLATE_THERMAL_LABEL)
+        self._preview_backup_thermal = []
+        self._loading_template = True
+        try:
+            self._designer_thermal.load_layout_json(default_thermal_label_layout())
+        finally:
+            self._loading_template = False
+        self._dirty_thermal = False
+        self._designer_thermal.fit_view()
+        if self._preview_check.isChecked():
+            self._apply_preview()
+        self.statusBar().showMessage("Thermal label template deleted; reset to default.", 5000)
+
     def _reload_batches(self) -> None:
         self._batch_combo.blockSignals(True)
         self._print_batch.blockSignals(True)
@@ -649,6 +725,7 @@ class MainWindow(QMainWindow):
             self._designer_env.set_column_keys([])
             self._designer_a4.set_column_keys([])
             self._designer_letter.set_column_keys([])
+            self._designer_thermal.set_column_keys([])
             self._apply_preview()
             return
         rows = self._db.get_records(int(bid))
@@ -660,12 +737,14 @@ class MainWindow(QMainWindow):
             self._designer_env.set_column_keys([])
             self._designer_a4.set_column_keys([])
             self._designer_letter.set_column_keys([])
+            self._designer_thermal.set_column_keys([])
             self._apply_preview()
             return
         keys: list[str] = list(rows[0].payload.keys())
         self._designer_env.set_column_keys(keys)
         self._designer_a4.set_column_keys(keys)
         self._designer_letter.set_column_keys(keys)
+        self._designer_thermal.set_column_keys(keys)
         self._table.setRowCount(len(rows))
         self._table.setColumnCount(len(keys))
         self._table.setHorizontalHeaderLabels(keys)
@@ -736,9 +815,12 @@ class MainWindow(QMainWindow):
                 self._preview_backup_a4 = self._designer_a4.snapshot_texts()
             if not self._preview_backup_letter:
                 self._preview_backup_letter = self._designer_letter.snapshot_texts()
+            if not self._preview_backup_thermal:
+                self._preview_backup_thermal = self._designer_thermal.snapshot_texts()
             self._designer_env.preview_merge(row)
             self._designer_a4.preview_merge(row)
             self._designer_letter.preview_merge(row)
+            self._designer_thermal.preview_merge(row)
         else:
             if self._preview_backup_env:
                 self._designer_env.restore_templates_after_preview(self._preview_backup_env)
@@ -749,6 +831,9 @@ class MainWindow(QMainWindow):
             if self._preview_backup_letter:
                 self._designer_letter.restore_templates_after_preview(self._preview_backup_letter)
                 self._preview_backup_letter = []
+            if self._preview_backup_thermal:
+                self._designer_thermal.restore_templates_after_preview(self._preview_backup_thermal)
+                self._preview_backup_thermal = []
 
     def _import_records_from_path(self, path: Path) -> None:
         try:
@@ -841,6 +926,9 @@ class MainWindow(QMainWindow):
         elif kind == "us_letter":
             dirty = self._dirty_letter
             msg = "Save your US Letter layout before continuing?"
+        elif kind == "thermal_label":
+            dirty = self._dirty_thermal
+            msg = "Save your direct thermal label layout before continuing?"
         else:
             dirty = self._dirty_envelope
             msg = "Save your envelope layout before continuing?"
@@ -861,6 +949,9 @@ class MainWindow(QMainWindow):
             elif kind == "us_letter":
                 self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
                 self._dirty_letter = False
+            elif kind == "thermal_label":
+                self._db.upsert_template(TEMPLATE_THERMAL_LABEL, self._designer_thermal.layout_json())
+                self._dirty_thermal = False
             else:
                 self._db.upsert_template(TEMPLATE_ENVELOPE, self._designer_env.layout_json())
                 self._dirty_envelope = False
@@ -886,6 +977,8 @@ class MainWindow(QMainWindow):
             default_name = "letters-a4.pdf"
         elif kind == "us_letter":
             default_name = "letters-us-letter.pdf"
+        elif kind == "thermal_label":
+            default_name = "thermal-labels.pdf"
         else:
             default_name = "envelopes.pdf"
         path, _ = QFileDialog.getSaveFileName(
@@ -914,6 +1007,8 @@ class MainWindow(QMainWindow):
             default_name = "a4-sample.pdf"
         elif kind == "us_letter":
             default_name = "us-letter-sample.pdf"
+        elif kind == "thermal_label":
+            default_name = "thermal-label-sample.pdf"
         else:
             default_name = "envelope-sample.pdf"
         path, _ = QFileDialog.getSaveFileName(
@@ -988,7 +1083,7 @@ class MainWindow(QMainWindow):
         if app is not None and self._app_drop_filter_installed:
             app.removeEventFilter(self)
             self._app_drop_filter_installed = False
-        if self._dirty_envelope or self._dirty_a4 or self._dirty_letter:
+        if self._dirty_envelope or self._dirty_a4 or self._dirty_letter or self._dirty_thermal:
             r = QMessageBox.question(
                 self,
                 "Quit",
@@ -1004,6 +1099,8 @@ class MainWindow(QMainWindow):
                     self._db.upsert_template(TEMPLATE_A4, self._designer_a4.layout_json())
                 if self._dirty_letter:
                     self._db.upsert_template(TEMPLATE_US_LETTER, self._designer_letter.layout_json())
+                if self._dirty_thermal:
+                    self._db.upsert_template(TEMPLATE_THERMAL_LABEL, self._designer_thermal.layout_json())
             elif r == QMessageBox.StandardButton.Cancel:
                 event.ignore()
                 return

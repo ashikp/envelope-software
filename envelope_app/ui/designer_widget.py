@@ -964,13 +964,24 @@ class DesignerWidget(QWidget):
         *,
         layout_kind: str = LAYOUT_KIND_ENVELOPE,
         envelope_size_id: str | None = None,
+        lock_envelope_size: bool = False,
     ) -> None:
         super().__init__(parent)
         self._suppress_nav = False
         self._layout_kind = layout_kind
         self._orientation = ORIENTATION_PORTRAIT
-        self._envelope_size_id = envelope_size_id or DEFAULT_ENVELOPE_SIZE_ID
         self._suppress_envelope_ui = False
+        self._lock_envelope_size = (
+            lock_envelope_size
+            and layout_kind == LAYOUT_KIND_ENVELOPE
+            and (envelope_size_id or "").strip() != ""
+        )
+        if self._lock_envelope_size:
+            self._envelope_size_id = str(envelope_size_id)
+            # Direct thermal label stock defaults to landscape (feed direction) matching default_thermal_label_layout().
+            self._orientation = ORIENTATION_LANDSCAPE
+        else:
+            self._envelope_size_id = envelope_size_id or DEFAULT_ENVELOPE_SIZE_ID
         self._scene = EnvelopeScene()
         self._scene._on_change = self.layout_changed.emit
         pw, ph = self._page_dims()
@@ -1061,20 +1072,30 @@ class DesignerWidget(QWidget):
         self._orientation_combo.addItem("Landscape", ORIENTATION_LANDSCAPE)
         self._orientation_combo.currentIndexChanged.connect(self._on_orientation_changed)
         self._orientation_combo.view().setUniformItemSizes(True)
+        self._orientation_combo.blockSignals(True)
+        try:
+            _oi = self._orientation_combo.findData(self._orientation)
+            if _oi >= 0:
+                self._orientation_combo.setCurrentIndex(_oi)
+        finally:
+            self._orientation_combo.blockSignals(False)
 
         self._lbl_envelope_size = QLabel("Envelope size")
         self._lbl_envelope_size.setObjectName("fieldLabel")
-        self._lbl_envelope_size.setVisible(layout_kind == LAYOUT_KIND_ENVELOPE)
+        env_visible = layout_kind == LAYOUT_KIND_ENVELOPE and not self._lock_envelope_size
+        self._lbl_envelope_size.setVisible(env_visible)
         self._envelope_combo = QComboBox()
         self._envelope_combo.setObjectName("designerEnvelopeSizeCombo")
         self._envelope_combo.setMinimumWidth(120)
         for eid in ENVELOPE_SIZE_ORDER:
             self._envelope_combo.addItem(ENVELOPE_SIZES[eid][0], eid)
+        # macOS/Qt often limits the popup to ~10 rows by default; scrolling hides the last entries.
+        self._envelope_combo.setMaxVisibleItems(max(16, len(ENVELOPE_SIZE_ORDER)))
         ei = self._envelope_combo.findData(self._envelope_size_id)
         if ei >= 0:
             self._envelope_combo.setCurrentIndex(ei)
         self._envelope_combo.currentIndexChanged.connect(self._on_envelope_size_changed)
-        self._envelope_combo.setVisible(layout_kind == LAYOUT_KIND_ENVELOPE)
+        self._envelope_combo.setVisible(env_visible)
 
         self._fields_bar = QFrame()
         self._fields_bar.setObjectName("mergeFieldsBar")
@@ -1227,6 +1248,8 @@ class DesignerWidget(QWidget):
 
     def _on_envelope_size_changed(self, _index: int) -> None:
         if self._layout_kind != LAYOUT_KIND_ENVELOPE:
+            return
+        if self._lock_envelope_size:
             return
         if self._suppress_envelope_ui:
             return

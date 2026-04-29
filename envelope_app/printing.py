@@ -87,11 +87,21 @@ def apply_printer_page(printer: QPrinter, layout_json: str) -> None:
     else:
         pw, ph = page_size_points_from_layout_json(layout_json)
         page_size = QPageSize(QSizeF(pw, ph), QPageSize.Unit.Point)
+    # A4 / Letter are defined in Qt as portrait-sized pages; rotate via layout orientation.
+    # Envelopes use a custom QPageSize(pw, ph) that already matches the design canvas (including
+    # landscape — width may be greater than height). Setting Landscape here would rotate again
+    # and the PDF/print job comes out portrait relative to the design.
+    if lk in (LAYOUT_KIND_A4, LAYOUT_KIND_US_LETTER):
+        layout_orient = (
+            QPageLayout.Orientation.Landscape
+            if orient == ORIENTATION_LANDSCAPE
+            else QPageLayout.Orientation.Portrait
+        )
+    else:
+        layout_orient = QPageLayout.Orientation.Portrait
     page_layout = QPageLayout(
         page_size,
-        QPageLayout.Orientation.Landscape
-        if orient == ORIENTATION_LANDSCAPE
-        else QPageLayout.Orientation.Portrait,
+        layout_orient,
         QMarginsF(0, 0, 0, 0),
         QPageLayout.Unit.Point,
     )

@@ -1,6 +1,6 @@
 [project]
 name = "envelope-studio"
-version = "1.0.0"
+version = "1.0.1"
 description = "Envelope #10 label designer with JSON mail merge and local printing"
 requires-python = ">=3.9"
 dependencies = [

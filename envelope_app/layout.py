@@ -57,6 +57,8 @@ ENVELOPE_SIZES: dict[str, tuple[str, float, float]] = {
     "env_6x9": ("6 × 9 envelope", *_in(6.0, 9.0)),
     "env_9x12": ("9 × 12 envelope", *_in(9.0, 12.0)),
     "env_10x13": ("10 × 13 envelope", *_in(10.0, 13.0)),
+    # Direct thermal rolls (often 2.625″ wide × 1″ tall face stock)
+    "label_dt_2625x1": ("2.625 × 1 in Direct Thermal Labels", *_in(2.625, 1.0)),
 }
 
 # Combo order (matches client list; duplicates merged into one row each)
@@ -80,6 +82,9 @@ ENVELOPE_SIZE_ORDER: tuple[str, ...] = (
 )
 
 DEFAULT_ENVELOPE_SIZE_ID = "env_10"
+
+# Direct thermal 2.625″ × 1″ — used as its own “Design for” layout (fixed size).
+LABEL_DT_THERMAL_ID = "label_dt_2625x1"
 
 
 def envelope_dimensions_pt(size_id: str) -> tuple[float, float]:
@@ -228,6 +233,33 @@ class ImageElement:
     w: float
     h: float
     path: str
+
+
+def default_thermal_label_layout() -> str:
+    """Default layout for locked 2.625″ × 1″ thermal stock (typically landscape on the roll)."""
+    pw, ph = get_page_dimensions(
+        LAYOUT_KIND_ENVELOPE,
+        ORIENTATION_LANDSCAPE,
+        envelope_size_id=LABEL_DT_THERMAL_ID,
+    )
+    mx = min(24.0, pw * 0.08)
+    my = min(18.0, ph * 0.12)
+    el = TextElement(
+        uid=str(uuid.uuid4()),
+        x=mx,
+        y=my,
+        w=max(pw - 2 * mx, 36.0),
+        h=max(min(48.0, ph - 2 * my), 20.0),
+        text="{name}",
+        font_pt=10.0,
+        font_family="",
+    )
+    return layout_to_json(
+        [el],
+        ORIENTATION_LANDSCAPE,
+        layout_kind=LAYOUT_KIND_ENVELOPE,
+        envelope_size_id=LABEL_DT_THERMAL_ID,
+    )
 
 
 def default_layout() -> str:
